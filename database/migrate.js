@@ -11,7 +11,7 @@ const migrationsDirectory = join(directory, 'migrations');
 function loadEnvFile() {
   // Keep the runner dependency-light; do not overwrite variables already set by the shell.
   try {
-    const content = readFileSync(join(directory, '.env'), 'utf8');
+    const content = readFileSync(join(directory, '..', '.env'), 'utf8');
     for (const line of content.split(/\r?\n/)) {
       const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
       if (!match || match[1] in process.env) continue;
