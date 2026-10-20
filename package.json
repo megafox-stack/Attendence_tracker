@@ -5,9 +5,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:api": "node --watch backend/src/server.js",
+    "start:api": "node backend/src/server.js",
     "build": "vite build",
     "cap:sync": "npx cap sync android",
     "cap:open": "npx cap open android",
+    "android:api-forward": "adb reverse tcp:3001 tcp:3001",
+    "android:api-forward:remove": "adb reverse --remove tcp:3001",
     "db:up": "node database/migrate.js up",
     "db:down": "node database/migrate.js down",
     "build:apk": "npm run build && npx cap sync android && cd android && gradlew.bat assembleDebug"
@@ -15,6 +19,11 @@
   "dependencies": {
     "@capacitor/android": "^8.5.3",
     "@capacitor/core": "^8.5.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
     "lucide-react": "^0.468.0",
     "mysql2": "^3.15.3",
     "react": "^18.3.1",

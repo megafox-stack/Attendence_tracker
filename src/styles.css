@@ -10,6 +10,25 @@
 @media(max-width:400px){.main-area{padding-right:11px;padding-left:11px}.topbar{padding-right:11px;padding-left:11px}.connection-pill{font-size:8px}.daily-banner{flex-wrap:wrap}.banner-state{margin-left:45px}.timetable-aside{grid-template-columns:1fr}.day-button{font-size:7px}.summary-stats>div{padding:0 5px}.entry-time{min-width:61px}.class-row-info>span{font-size:7px}.daily-class-row{grid-template-columns:14px 25px minmax(86px,1fr) minmax(98px,.8fr)}.bulk-actions .button{gap:4px;padding:0 6px}.page-heading h1{font-size:19px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 
+/* Account connection controls */
+.connection-ready .connection-dot{background:#13a572;box-shadow:0 0 0 3px #e5f7ef}
+.connection-offline .connection-dot{background:#d79a3c}
+.connection-checking .connection-dot{background:#6e9fe7}
+.account-action{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:33px;padding:0 11px;border:1px solid #dceafa;border-radius:9px;background:#fff;color:#2468c4;font-size:10px;font-weight:700}
+.account-action:hover{background:#f4f8ff;border-color:#bdd5f5}
+.account-name{max-width:160px;overflow:hidden;color:#536782;text-overflow:ellipsis;white-space:nowrap;font-size:10px}
+.auth-dialog-intro{margin-bottom:12px;color:#71839c;font-size:11px;line-height:1.55}
+.auth-config-note{margin-bottom:13px;padding:9px 10px;border:1px solid #f0e2c9;border-radius:8px;background:#fffaf1;color:#876b3a;font-size:10px;line-height:1.5}
+.auth-config-note code{font-size:9px}
+.auth-form{gap:11px}
+.auth-form .field-hint{color:#8a98ab;font-size:9px}
+.auth-submit{width:100%;margin-top:2px}
+.auth-switch{margin:15px 0 0;color:#77869b;text-align:center;font-size:10px}
+.auth-switch button{padding:0;border:0;background:transparent;color:#176ce5;font:inherit;font-weight:700}
+.auth-footnote{margin:12px 0 0;color:#98a3b2;text-align:center;font-size:9px;line-height:1.5}
+.auth-global-notice{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 13px;padding:8px 10px;border:1px solid #dceafa;border-radius:8px;background:#f7faff;color:#55749b;font-size:10px;line-height:1.45}
+@media(max-width:650px){.account-action{min-height:30px;padding:0 8px;font-size:9px}.account-name{display:none}.topbar-right{gap:5px}.connection-pill{max-width:105px;overflow:hidden;text-overflow:ellipsis}}
+
 /* Reference-led app frame: compact app header, pale blue canvas and persistent app tabs. */
 body{background:radial-gradient(ellipse at 48% 4%,#ffffff 0,#f5f9ff 48%,#edf5ff 100%)}
 .app-shell{min-height:100vh;padding-bottom:0}
