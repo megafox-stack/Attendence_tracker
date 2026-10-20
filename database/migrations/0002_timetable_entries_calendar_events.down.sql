@@ -1,0 +1,4 @@
+-- Destructive rollback: only use before real data exists or after a verified backup.
+DROP TABLE calendar_events;
+DROP TABLE timetable_entries;
+ALTER TABLE subjects DROP INDEX uq_subjects_id_semester_user;
