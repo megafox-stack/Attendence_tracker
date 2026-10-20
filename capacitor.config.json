@@ -1,0 +1,9 @@
+{
+  "appId": "com.attenda.tracker",
+  "appName": "Attendance Tracker",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  }
+}
