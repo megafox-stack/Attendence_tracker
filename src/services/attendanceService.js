@@ -6,3 +6,5 @@ export const updateAttendanceStatus = (id, change) => apiRequest(`/attendance/cl
 export const applyBulkAttendanceChanges = (date, changes) => apiRequest('/attendance/bulk', { method: 'POST', body: JSON.stringify({ date, changes }) });
 export const submitDailyAttendance = (submission) => apiRequest('/attendance/daily-submission', { method: 'POST', body: JSON.stringify(submission) });
 export const getDashboardStatistics = () => apiRequest('/attendance/dashboard');
+export const getAttendanceSubjects = () => apiRequest('/attendance/subjects');
+export const getAttendanceInsights = (query = '') => apiRequest(`/attendance/insights${query}`);

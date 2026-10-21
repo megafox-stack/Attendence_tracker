@@ -5,6 +5,7 @@ import { findCurrentSemester } from './semesters.js';
 
 const statusToDb = new Map([['Pending', 'pending'], ['Present', 'present'], ['Absent', 'absent'], ['Cancelled', 'cancelled']]);
 const statusFromDb = new Map([...statusToDb].map(([label, value]) => [value, label]));
+const dateOnly = (value) => value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
 const validDate = (value) => typeof value === 'string'
   && /^\d{4}-\d{2}-\d{2}$/.test(value)
   && !Number.isNaN(Date.parse(`${value}T00:00:00.000Z`))
@@ -55,6 +56,23 @@ async function loadDay(pool, userId, date) {
     [userId, date],
   );
   return rows.map(serializeOccurrence);
+}
+
+function percentage(present, absent) {
+  const denominator = Number(present) + Number(absent);
+  return denominator ? Math.round((Number(present) / denominator) * 1000) / 10 : null;
+}
+
+async function getUserLocalDate(pool, userId) {
+  const [rows] = await pool.execute('SELECT time_zone FROM users WHERE id = ? LIMIT 1', [userId]);
+  return rows[0] ? localToday(rows[0].time_zone) : localToday('UTC');
+}
+
+function serializeHistoryRow(row) {
+  return {
+    ...serializeOccurrence(row),
+    finalizedAt: row.finalized_at ? new Date(row.finalized_at).toISOString() : null,
+  };
 }
 
 function validateChanges(changes) {
@@ -113,6 +131,138 @@ export function createAttendanceRouter(pool) {
     const date = validateDateInput(req.query.date);
     const semester = await getCurrentSemesterForDate(pool, req.auth.userId, date);
     res.json({ date, records: await loadDay(pool, req.auth.userId, date), semester: { startDate: semester.start_date, endDate: semester.end_date, timeZone: semester.time_zone } });
+  });
+
+  // Summary and class rows are sourced only from saved occurrences.
+  router.get('/dashboard', async (req, res) => {
+    const [counts, date] = await Promise.all([
+      pool.execute(
+        `SELECT status, COUNT(*) AS count FROM class_occurrences WHERE user_id = ? GROUP BY status`,
+        [req.auth.userId],
+      ),
+      getUserLocalDate(pool, req.auth.userId),
+    ]);
+    const totals = { Present: 0, Absent: 0, Pending: 0, Cancelled: 0 };
+    for (const row of counts[0]) totals[statusFromDb.get(row.status)] = Number(row.count);
+    const todayRecords = await loadDay(pool, req.auth.userId, date);
+    const timeZoneRows = await pool.execute('SELECT time_zone FROM users WHERE id = ? LIMIT 1', [req.auth.userId]);
+    const timeZone = timeZoneRows[0][0]?.time_zone || 'UTC';
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
+    const nowMinutes = Number(parts.find((part) => part.type === 'hour')?.value || 0) * 60 + Number(parts.find((part) => part.type === 'minute')?.value || 0);
+    const nextClass = todayRecords.find((record) => {
+      const endMinutes = Number(record.end.slice(0, 2)) * 60 + Number(record.end.slice(3, 5));
+      return record.status !== 'Cancelled' && endMinutes > nowMinutes;
+    }) || null;
+    const finalized = totals.Present + totals.Absent + totals.Cancelled;
+    res.json({
+      date,
+      summary: { ...totals, finalized, total: Object.values(totals).reduce((sum, count) => sum + count, 0), attendancePercent: percentage(totals.Present, totals.Absent) },
+      todayRecords,
+      nextClass,
+    });
+  });
+
+  router.get('/subjects', async (req, res) => {
+    const semester = await findCurrentSemester(pool, req.auth.userId);
+    if (!semester) return res.json({ subjects: [] });
+    const [rows] = await pool.execute(
+      `SELECT s.id, s.name, s.code,
+              COALESCE(s.attendance_target_percent, sem.attendance_target_percent) AS attendance_target_percent,
+              SUM(c.status = 'present') AS present_count,
+              SUM(c.status = 'absent') AS absent_count,
+              SUM(c.status = 'pending') AS pending_count,
+              SUM(c.status = 'cancelled') AS cancelled_count
+       FROM subjects s JOIN semesters sem ON sem.id = s.semester_id AND sem.user_id = s.user_id
+       LEFT JOIN class_occurrences c ON c.subject_id = s.id AND c.user_id = s.user_id
+       WHERE s.user_id = ? AND s.semester_id = ? AND s.is_active = TRUE
+       GROUP BY s.id, s.name, s.code, s.attendance_target_percent, sem.attendance_target_percent
+       ORDER BY s.name, s.code`,
+      [req.auth.userId, semester.id],
+    );
+    res.json({ subjects: rows.map((row) => {
+      const present = Number(row.present_count || 0);
+      const absent = Number(row.absent_count || 0);
+      return {
+        id: String(row.id), name: row.name, code: row.code,
+        targetPercent: row.attendance_target_percent == null ? null : Number(row.attendance_target_percent),
+        present, absent, pending: Number(row.pending_count || 0), cancelled: Number(row.cancelled_count || 0),
+        attendancePercent: percentage(present, absent),
+      };
+    }) });
+  });
+
+  router.get('/history', async (req, res) => {
+    const conditions = ['c.user_id = ?'];
+    const parameters = [req.auth.userId];
+    const from = req.query.from;
+    const to = req.query.to;
+    const status = req.query.status;
+    const subject = typeof req.query.subject === 'string' ? req.query.subject.trim() : '';
+    if (from && !validDate(from)) throw new HttpError(400, 'Choose a valid start date.', 'invalid_from_date');
+    if (to && !validDate(to)) throw new HttpError(400, 'Choose a valid end date.', 'invalid_to_date');
+    if (from && to && from > to) throw new HttpError(400, 'Start date must be before end date.', 'invalid_date_range');
+    if (from) { conditions.push('c.class_date >= ?'); parameters.push(from); }
+    if (to) { conditions.push('c.class_date <= ?'); parameters.push(to); }
+    if (status && status !== 'All statuses') {
+      const dbStatus = statusToDb.get(status);
+      if (!dbStatus) throw new HttpError(400, 'Choose a valid attendance status.', 'invalid_attendance_status');
+      conditions.push('c.status = ?'); parameters.push(dbStatus);
+    }
+    if (subject) { conditions.push('(c.subject_name_snapshot LIKE ? OR c.subject_code_snapshot LIKE ?)'); parameters.push(`%${subject}%`, `%${subject}%`); }
+    const [rows] = await pool.execute(
+      `SELECT c.id, c.subject_id, c.timetable_entry_id, c.class_date, c.scheduled_start, c.scheduled_end,
+              c.subject_name_snapshot, c.subject_code_snapshot, c.room_snapshot, c.status, c.finalized_at
+       FROM class_occurrences c WHERE ${conditions.join(' AND ')}
+       ORDER BY c.class_date DESC, c.scheduled_start DESC, c.id DESC LIMIT 500`,
+      parameters,
+    );
+    res.json({ records: rows.map(serializeHistoryRow) });
+  });
+
+  router.get('/insights', async (req, res) => {
+    const from = req.query.from;
+    const to = req.query.to;
+    if (from && !validDate(from)) throw new HttpError(400, 'Choose a valid start date.', 'invalid_from_date');
+    if (to && !validDate(to)) throw new HttpError(400, 'Choose a valid end date.', 'invalid_to_date');
+    if (from && to && from > to) throw new HttpError(400, 'Start date must be before end date.', 'invalid_date_range');
+    const conditions = ['c.user_id = ?'];
+    if (req.query.range && req.query.range !== 'semester') throw new HttpError(400, 'Choose a valid insights range.', 'invalid_insights_range');
+    const parameters = [req.auth.userId];
+    if (req.query.range === 'semester') {
+      const semester = await findCurrentSemester(pool, req.auth.userId);
+      if (!semester) conditions.push('1 = 0');
+      else {
+        conditions.push('c.class_date >= ?'); parameters.push(dateOnly(semester.start_date));
+        conditions.push('c.class_date <= ?'); parameters.push(dateOnly(semester.end_date));
+      }
+    }
+    if (from) { conditions.push('c.class_date >= ?'); parameters.push(from); }
+    if (to) { conditions.push('c.class_date <= ?'); parameters.push(to); }
+    const where = conditions.join(' AND ');
+    const [countResult, trendResult, subjectResult] = await Promise.all([
+      pool.execute(`SELECT c.status, COUNT(*) AS count FROM class_occurrences c WHERE ${where} GROUP BY c.status`, parameters),
+      pool.execute(`SELECT c.class_date, SUM(c.status = 'present') AS present, SUM(c.status = 'absent') AS absent FROM class_occurrences c WHERE ${where} GROUP BY c.class_date ORDER BY c.class_date`, parameters),
+      pool.execute(
+        `SELECT s.id, s.name, s.code, COALESCE(s.attendance_target_percent, sem.attendance_target_percent) AS target_percent,
+                SUM(c.status = 'present') AS present_count, SUM(c.status = 'absent') AS absent_count,
+                SUM(c.status = 'pending') AS pending_count
+         FROM class_occurrences c JOIN subjects s ON s.id = c.subject_id AND s.user_id = c.user_id
+         JOIN semesters sem ON sem.id = c.semester_id AND sem.user_id = c.user_id
+         WHERE ${where} GROUP BY s.id, s.name, s.code, s.attendance_target_percent, sem.attendance_target_percent ORDER BY s.name`,
+        parameters,
+      ),
+    ]);
+    const counts = { Present: 0, Absent: 0, Pending: 0, Cancelled: 0 };
+    for (const row of countResult[0]) counts[statusFromDb.get(row.status)] = Number(row.count);
+    const finalized = counts.Present + counts.Absent;
+    res.json({
+      summary: { ...counts, finalized, attendancePercent: percentage(counts.Present, counts.Absent) },
+      trend: trendResult[0].map((row) => ({ date: typeof row.class_date === 'string' ? row.class_date.slice(0, 10) : row.class_date.toISOString().slice(0, 10), present: Number(row.present || 0), absent: Number(row.absent || 0) })),
+      subjects: subjectResult[0].map((row) => {
+        const present = Number(row.present_count || 0); const absent = Number(row.absent_count || 0);
+        return { id: String(row.id), name: row.name, code: row.code, targetPercent: row.target_percent == null ? null : Number(row.target_percent), present, absent, pending: Number(row.pending_count || 0), attendancePercent: percentage(present, absent) };
+      }),
+    });
   });
 
   // This is an explicit, user-requested operation; it is not a background scheduler.

@@ -6,6 +6,7 @@ import { createSemestersRouter } from './semesters.js';
 import { createSubjectsRouter } from './subjects.js';
 import { createTimetableRouter } from './timetable.js';
 import { createAttendanceRouter } from './attendance.js';
+import { createSchedulerRouter } from './scheduler.js';
 import { HttpError } from './errors.js';
 
 export function createApp({ pool, sessionTtlDays, allowedOrigins }) {
@@ -33,6 +34,7 @@ export function createApp({ pool, sessionTtlDays, allowedOrigins }) {
   app.use('/api/subjects', createSubjectsRouter(pool));
   app.use('/api/timetable', createTimetableRouter(pool));
   app.use('/api/attendance', createAttendanceRouter(pool));
+  app.use('/api/scheduler', createSchedulerRouter(pool));
 
   app.use((_req, _res, next) => next(new HttpError(404, 'Route not found.', 'not_found')));
   app.use((error, _req, res, _next) => {

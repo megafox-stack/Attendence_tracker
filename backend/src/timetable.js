@@ -217,11 +217,39 @@ export function createTimetableRouter(pool) {
   router.delete('/entries/:id', async (req, res) => {
     const id = req.params.id;
     if (!/^\d+$/.test(id)) throw new HttpError(404, 'Timetable entry not found.', 'entry_not_found');
-    const semester = await findCurrentSemester(pool, req.auth.userId);
-    if (!semester) throw new HttpError(404, 'Timetable entry not found.', 'entry_not_found');
-    const [result] = await pool.execute('DELETE FROM timetable_entries WHERE id = ? AND user_id = ? AND semester_id = ?', [id, req.auth.userId, semester.id]);
-    if (!result.affectedRows) throw new HttpError(404, 'Timetable entry not found.', 'entry_not_found');
-    res.status(204).end();
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      const semester = await lockCurrentSemester(connection, req.auth.userId);
+      const [entries] = await connection.execute(
+        'SELECT id FROM timetable_entries WHERE id = ? AND user_id = ? AND semester_id = ? LIMIT 1 FOR UPDATE',
+        [id, req.auth.userId, semester.id],
+      );
+      if (!entries[0]) throw new HttpError(404, 'Timetable entry not found.', 'entry_not_found');
+      const [occurrences] = await connection.execute(
+        'SELECT COUNT(*) AS count FROM class_occurrences WHERE timetable_entry_id = ? AND user_id = ?',
+        [id, req.auth.userId],
+      );
+      const hasAttendanceRecords = Number(occurrences[0].count) > 0;
+      if (hasAttendanceRecords) {
+        // Keep the referenced timetable row so historical attendance records and
+        // their foreign-key links remain intact; disabling it stops future generation.
+        await connection.execute(
+          'UPDATE timetable_entries SET is_active = FALSE WHERE id = ? AND user_id = ? AND semester_id = ?',
+          [id, req.auth.userId, semester.id],
+        );
+      } else {
+        await connection.execute(
+          'DELETE FROM timetable_entries WHERE id = ? AND user_id = ? AND semester_id = ?',
+          [id, req.auth.userId, semester.id],
+        );
+      }
+      await connection.commit();
+      res.json({ preservedRecords: hasAttendanceRecords });
+    } catch (error) {
+      try { await connection.rollback(); } catch { /* Preserve the original error. */ }
+      throw error;
+    } finally { connection.release(); }
   });
 
   router.post('/holidays', async (req, res) => {

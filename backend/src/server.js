@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import mysql from 'mysql2/promise';
 import { createApp } from './app.js';
+import { startSchedulerWorker } from './schedulerWorker.js';
 
 function integerEnv(name, fallback, { min, max }) {
   const value = Number(process.env[name] ?? fallback);
@@ -47,12 +48,14 @@ const pool = mysql.createPool({
 });
 
 const app = createApp({ pool, sessionTtlDays, allowedOrigins });
+const stopScheduler = startSchedulerWorker(pool);
 const server = app.listen(port, '0.0.0.0', () => {
   console.log(`Attendance API listening on port ${port} (${nodeEnv}).`);
 });
 
 async function shutdown(signal) {
   console.log(`${signal} received; shutting down API.`);
+  stopScheduler();
   server.close(async (error) => {
     try {
       await pool.end();
