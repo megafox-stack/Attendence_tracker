@@ -37,6 +37,10 @@ body{background:radial-gradient(ellipse at 48% 4%,#ffffff 0,#f5f9ff 48%,#edf5ff 
 .brand-mark{width:33px;height:33px;border-radius:10px;box-shadow:0 3px 8px #1670f82b}
 .brand strong{color:#123473;font-size:15px}
 .brand small{font-size:7px;letter-spacing:1px}
+.account-connected{display:inline-flex;align-items:center;gap:5px;min-height:30px;padding:0 9px;border:1px solid #ccebdd;border-radius:9px;background:#f0fbf6;color:#17845a;font-size:9px;font-weight:700;white-space:nowrap}
+.account-connected-compact{display:none}
+@media(max-width:650px){.account-connected{min-height:30px;padding:0 7px;font-size:9px}.account-signout{width:30px;min-height:30px;padding:0}.account-signout span{display:none}}
+@media(max-width:400px){.account-connected-full{display:none}.account-connected-compact{display:inline}}
 .body-layout{min-height:calc(100vh - 62px)}
 .main-area{margin-left:0;padding:30px 34px 92px}
 .content-width{max-width:990px}

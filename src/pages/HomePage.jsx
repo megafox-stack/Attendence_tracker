@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowRight, Bell, CalendarDays, ChevronRight, CircleHelp, Clock3, Gauge, ListChecks, Settings2, TrendingUp } from 'lucide-react';
+import { ArrowRight, Bell, CalendarDays, ChevronRight, CircleHelp, Clock3, Gauge, ListChecks, Settings2, TrendingUp, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { EmptyState, PageHeading, SectionTitle } from '../App.jsx';
+import { EmptyState, Overlay, PageHeading, SectionTitle } from '../App.jsx';
 import StatusBadge from '../components/StatusBadge.jsx';
 import { hasSessionToken } from '../services/apiClient.js';
-import { getDashboardStatistics } from '../services/attendanceService.js';
+import { getDashboardStatistics, resetAttendanceRecords } from '../services/attendanceService.js';
 import { getSchedulerStatus } from '../services/schedulerService.js';
 
 function Metric({ icon: Icon, label, value, accent = '' }) {
@@ -16,6 +16,11 @@ export default function HomePage() {
   const [scheduler, setScheduler] = useState(null);
   const [state, setState] = useState('loading');
   const [error, setError] = useState('');
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetPhrase, setResetPhrase] = useState('');
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetError, setResetError] = useState('');
+  const [resetMessage, setResetMessage] = useState('');
   const load = useCallback(async (quiet = false) => {
     if (!hasSessionToken()) { setDashboard(null); setScheduler(null); setState('signed-out'); return; }
     if (!quiet) setState('loading');
@@ -39,7 +44,24 @@ export default function HomePage() {
   const nextClass = dashboard?.nextClass;
   const schedulerLabel = state !== 'ready' ? 'Not connected' : scheduler?.status === 'error' ? 'Error' : scheduler?.enabled ? 'Active' : scheduler?.configured ? 'Disabled' : 'Setup required';
 
-  return <><PageHeading eyebrow="YOUR OVERVIEW" title="Welcome" description="Stay consistent. Your attendance builds your future." />
+  async function confirmReset() {
+    if (resetPhrase.trim().toUpperCase() !== 'RESET' || resetBusy) return;
+    setResetBusy(true); setResetError(''); setResetMessage('');
+    try {
+      const result = await resetAttendanceRecords();
+      setResetOpen(false); setResetPhrase('');
+      await load(true);
+      const count = Number(result.deletedRecords || 0);
+      const changes = Number(result.deletedChanges || 0);
+      const schedulerNote = scheduler?.enabled ? ' The scheduler remains enabled and may create today’s scheduled records again on its next check.' : '';
+      setResetMessage(`${count} attendance ${count === 1 ? 'record' : 'records'} and ${changes} correction ${changes === 1 ? 'entry' : 'entries'} removed. Your timetable and account setup were kept.${schedulerNote}`);
+    } catch (requestError) {
+      setResetError(requestError.message || 'Could not reset attendance records. No reset was confirmed.');
+    } finally { setResetBusy(false); }
+  }
+
+  return <><PageHeading eyebrow="YOUR OVERVIEW" title="Welcome" description="Stay consistent. Your attendance builds your future." action={state === 'ready' ? <button type="button" className="button button-secondary button-small" disabled={!hasRecords} onClick={() => { setResetError(''); setResetMessage(''); setResetPhrase(''); setResetOpen(true); }}><Trash2 size={14} />Reset attendance</button> : undefined} />
+    {resetMessage && <div className="inline-feedback" role="status">{resetMessage}<button type="button" aria-label="Dismiss message" onClick={() => setResetMessage('')}>×</button></div>}
     {state === 'error' && <div className="inline-feedback" role="alert">{error}<button type="button" onClick={load}>Retry</button></div>}
     <section className="card overview-card"><div className="overview-top"><div className="overview-copy"><span className="card-kicker">OVERALL ATTENDANCE</span><div className="percentage-line"><strong>{percentage == null ? '—' : `${percentage}%`}</strong><span>{percentage == null ? (state === 'loading' ? 'Loading records' : 'No attendance data') : 'Present / finalized'}</span></div><p>{hasRecords ? `${summary.finalized} finalized classes. Pending and cancelled records are excluded from the percentage.` : 'Your summary will appear when the scheduler creates records and you confirm attendance.'}</p></div><div className={`progress-ring${percentage == null ? ' ring-empty' : ''}`} style={percentage == null ? undefined : { background: `conic-gradient(#2678fc ${percentage * 3.6}deg,#eaf2fb ${percentage * 3.6}deg 360deg)` }} role="img" aria-label={percentage == null ? 'No attendance data' : `${percentage}% attendance`}><div><Gauge size={21} /><span>{percentage == null ? '—' : `${percentage}%`}</span></div></div></div>
       <div className="overview-divider" /><div className="metrics-grid"><Metric icon={TrendingUp} label="Present" value={hasRecords ? summary.Present : '—'} accent="metric-green" /><Metric icon={CircleHelp} label="Absent" value={hasRecords ? summary.Absent : '—'} accent="metric-red" /><Metric icon={Clock3} label="Pending" value={hasRecords ? summary.Pending : '—'} accent="metric-amber" /><Metric icon={CalendarDays} label="Cancelled" value={hasRecords ? summary.Cancelled : '—'} accent="metric-slate" /></div></section>
@@ -53,5 +75,6 @@ export default function HomePage() {
         {state === 'ready' && todaysRecords.length > 0 && <div className="home-class-list">{todaysRecords.map((record) => <Link className="home-class-row" to="/review" key={record.id}><span className="home-class-icon"><CalendarDays size={15} /></span><span className="home-class-copy"><strong>{record.subject}</strong><small>{record.code} · {record.start}–{record.end}{record.room ? ` · ${record.room}` : ''}</small></span><StatusBadge status={record.status} /><ChevronRight size={14} /></Link>)}</div>}
       </section></div>
     <section className="card next-card"><div className="next-icon"><Clock3 size={18} /></div><div className="next-copy"><span className="card-kicker">UP NEXT</span><h2>{nextClass ? nextClass.subject : 'No upcoming class record'}</h2><p>{nextClass ? `${nextClass.start}–${nextClass.end} · ${nextClass.code}${nextClass.room ? ` · ${nextClass.room}` : ''}` : 'Next class appears here after a scheduler-generated record exists for today.'}</p></div><Link className="next-action" to={nextClass ? '/review' : '/timetable'}>{nextClass ? 'Review today' : 'View timetable'} <ChevronRight size={15} /></Link></section>
+    {resetOpen && <Overlay title="Reset all attendance records?" onClose={() => { if (!resetBusy) { setResetOpen(false); setResetPhrase(''); } }} footer={<><button type="button" className="button button-secondary" disabled={resetBusy} onClick={() => { setResetOpen(false); setResetPhrase(''); }}>Cancel</button><button type="button" className="button button-danger" disabled={resetBusy || resetPhrase.trim().toUpperCase() !== 'RESET'} onClick={confirmReset}>{resetBusy ? 'Resetting…' : <><Trash2 size={14} />Delete all records</>}</button></>}><p className="dialog-copy">This permanently removes all <strong>{summary?.total ?? 0}</strong> saved Pending, Present, Absent, and Cancelled attendance records and their correction history for your account.</p><p className="dialog-copy">Your account, semester, subjects, timetable, holidays, and scheduler setting will be kept. If the scheduler is enabled, it may generate today’s scheduled class records again on its next check.</p><label className="field"><span>Type RESET to confirm <em>*</em></span><input type="text" value={resetPhrase} onChange={(event) => setResetPhrase(event.target.value)} autoComplete="off" autoCapitalize="characters" disabled={resetBusy} /></label>{resetError && <p className="form-error" role="alert">{resetError}</p>}</Overlay>}
   </>;
 }

@@ -8,3 +8,4 @@ export const submitDailyAttendance = (submission) => apiRequest('/attendance/dai
 export const getDashboardStatistics = () => apiRequest('/attendance/dashboard');
 export const getAttendanceSubjects = () => apiRequest('/attendance/subjects');
 export const getAttendanceInsights = (query = '') => apiRequest(`/attendance/insights${query}`);
+export const resetAttendanceRecords = () => apiRequest('/attendance/records', { method: 'DELETE' });

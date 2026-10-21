@@ -127,6 +127,39 @@ export function createAttendanceRouter(pool) {
   const router = Router();
   router.use((req, res, next) => authenticateSession(pool, req, res, next));
 
+  router.delete('/records', async (req, res) => {
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      // Serialize with the scheduler and take row locks so an attendance
+      // correction cannot race the reset and leave orphaned audit changes.
+      await connection.execute(
+        'SELECT user_id FROM scheduler_settings WHERE user_id = ? FOR UPDATE',
+        [req.auth.userId],
+      );
+      await connection.execute(
+        'SELECT id FROM class_occurrences WHERE user_id = ? FOR UPDATE',
+        [req.auth.userId],
+      );
+      const [changeDelete] = await connection.execute(
+        'DELETE FROM attendance_changes WHERE user_id = ?',
+        [req.auth.userId],
+      );
+      const [recordDelete] = await connection.execute(
+        'DELETE FROM class_occurrences WHERE user_id = ?',
+        [req.auth.userId],
+      );
+      await connection.commit();
+      res.json({
+        deletedRecords: Number(recordDelete.affectedRows || 0),
+        deletedChanges: Number(changeDelete.affectedRows || 0),
+      });
+    } catch (error) {
+      try { await connection.rollback(); } catch { /* Preserve the original error. */ }
+      throw error;
+    } finally { connection.release(); }
+  });
+
   router.get('/classes', async (req, res) => {
     const date = validateDateInput(req.query.date);
     const semester = await getCurrentSemesterForDate(pool, req.auth.userId, date);
@@ -300,7 +333,7 @@ export function createAttendanceRouter(pool) {
          JOIN subjects s ON s.id = t.subject_id AND s.user_id = t.user_id AND s.semester_id = t.semester_id
          WHERE t.user_id = ? AND t.semester_id = ? AND t.day_of_week = ? AND t.is_active = TRUE
            AND t.effective_from <= ? AND t.effective_until >= ?
-         ON DUPLICATE KEY UPDATE id = id`,
+         ON DUPLICATE KEY UPDATE id = class_occurrences.id`,
         [date, req.auth.userId, semester.id, weekday, date, date],
       );
       await connection.commit();
