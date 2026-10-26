@@ -1,4 +1,6 @@
-# Local MySQL and migrations
+# Local MySQL, migrations, and offline Android storage
+
+The installed Android app now stores day-to-day attendance locally in Room/SQLite and does not require MySQL, an API server, or an internet connection. MySQL instructions below are for the existing development backend and for exporting its data before moving it to a device.
 
 This configures a local development database only. Production should use a managed MySQL service, separate credentials, TLS, and backups.
 
@@ -25,9 +27,31 @@ MySQL is published only on `127.0.0.1:3306`; the data lives in the `attendance_m
 
 The runner creates a `schema_migrations` table, stores a SHA-256 checksum for every applied migration, and refuses to run if an applied migration file has changed. MySQL DDL statements implicitly commit, so a failed migration may have partially changed the schema; inspect the database before retrying.
 
+## Export existing account data for offline Android migration
+
+Before installing the Room-backed offline app, export each account from the existing MySQL database into a versioned JSON backup. This command reads the database and writes a new file without modifying or deleting server data:
+
+```powershell
+npm run db:export-account -- student@example.com .\attendance-backup.json
+```
+
+The export omits account credentials and session tokens. Keep the backup private; it contains attendance and timetable data. In the Android app, choose **Restore backup** and select this file. Restore validates the complete file before replacing any on-device dataset. Existing MySQL data remains untouched.
+
+The exporter writes format version 1, includes attendance change history and scheduler settings, and never overwrites an existing output file. When the former MySQL schema contains multiple occurrences tied to the same recurring entry and date, the export preserves every occurrence with hidden, inactive historical timetable aliases so the offline database can enforce its stricter unique `(timetable entry, class date)` rule. These aliases do not appear in the editable weekly timetable.
+
+### Build and verify the offline Android app
+
+1. In Android Studio, sync the Gradle project after `npx cap sync android`.
+2. Build and install the debug APK. The app database is `attendance-tracker.db` in Android's private app storage.
+3. Enable airplane mode, configure a semester, subject, and recurring class, then enable the on-device scheduler.
+4. Reopen the app and check Home, Attendance, Timetable, Daily Review, and Insights. Only generated or manually confirmed records appear; no sample records are created.
+5. From Home, export a backup. To restore, choose a backup and confirm replacement. A malformed file is rejected before local records are changed.
+
+WorkManager runs the daily scheduler locally. Android may defer background work due to power management, and it cannot run while the app is force-stopped. On a scheduled check, it generates only that local calendar date's Pending records, skipping holidays, inactive entries, and dates outside the configured semester. Repeated checks use the unique timetable-entry/date constraint and do not overwrite reviewed records.
+
 ## Current scope
 
-Migrations 0001–0005 cover users, semesters, subjects, timetable entries, calendar events, class occurrences, attendance change history, hashed API sessions, and semester working-day settings. The API provides authenticated semester, subject, recurring timetable-entry, holiday, explicit class-record preparation, and attendance update management. No records are seeded, and class records are only created after a user explicitly prepares a date; no background scheduler runs.
+Migrations 0001–0007 cover the former account-based schema, including users, semesters, subjects, timetable entries, calendar events, class occurrences, attendance change history, hashed API sessions, scheduler settings, and semester working-day settings. The offline Android app does not call these API routes. Server data remains on the server until the read-only export file is explicitly restored on a device.
 
 ## Local API
 

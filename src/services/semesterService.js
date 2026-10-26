@@ -1,14 +1,8 @@
-import { apiRequest } from './apiClient.js';
+import { localRequest } from './localAttendanceRepository.js';
 
-export async function getCurrentSemester() {
-  const result = await apiRequest('/semesters/current');
-  return result.semester;
-}
-
-export async function saveCurrentSemester(semester) {
-  const result = await apiRequest('/semesters/current', {
-    method: 'PUT',
-    body: JSON.stringify(semester),
-  });
-  return result.semester;
-}
+export async function getCurrentSemester() { return (await localRequest('semester.getCurrent')).semester || null; }
+export async function saveCurrentSemester(semester) { return (await localRequest('semester.save', semester)).semester; }
+export async function getSemesters() { return localRequest('semester.list'); }
+export async function createSemester(semester) { return (await localRequest('semester.create', semester)).semester; }
+export async function selectSemester(id) { return (await localRequest('semester.select', { id })).semester; }
+export async function deleteSemester(id) { return localRequest('semester.delete', { id }); }

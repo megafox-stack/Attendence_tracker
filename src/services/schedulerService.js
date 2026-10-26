@@ -1,3 +1,4 @@
-import { apiRequest } from './apiClient.js';
-export const getSchedulerStatus = () => apiRequest('/scheduler/status');
-export const updateScheduler = (settings) => apiRequest('/scheduler/settings', { method: 'PUT', body: JSON.stringify(settings) });
+import { localRequest } from './localAttendanceRepository.js';
+
+export const getSchedulerStatus = () => localRequest('scheduler.status');
+export const updateScheduler = (settings) => localRequest('scheduler.update', settings);

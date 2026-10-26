@@ -3,10 +3,12 @@ package com.attenda.tracker;
 import android.os.Bundle;
 import android.webkit.WebSettings;
 import com.getcapacitor.BridgeActivity;
+import com.attenda.tracker.local.LocalAttendancePlugin;
 
 public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        registerPlugin(LocalAttendancePlugin.class);
         super.onCreate(savedInstanceState);
 
         // This resource is true only in the debug source set, so release builds

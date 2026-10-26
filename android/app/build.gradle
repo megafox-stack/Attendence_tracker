@@ -3,6 +3,11 @@ apply plugin: 'com.android.application'
 android {
     namespace = "com.attenda.tracker"
     compileSdk = rootProject.ext.compileSdkVersion
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+        coreLibraryDesugaringEnabled true
+    }
     defaultConfig {
         applicationId "com.attenda.tracker"
         minSdkVersion rootProject.ext.minSdkVersion
@@ -10,6 +15,11 @@ android {
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        javaCompileOptions {
+            annotationProcessorOptions {
+                arguments += ["room.schemaLocation": "$projectDir/schemas".toString()]
+            }
+        }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
@@ -31,6 +41,7 @@ repositories {
 }
 
 dependencies {
+    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.5"
     implementation fileTree(include: ['*.jar'], dir: 'libs')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
@@ -40,6 +51,16 @@ dependencies {
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     implementation project(':capacitor-cordova-android-plugins')
+
+    // Room 2.8.x supports Java annotation processing and this project's minSdk 24.
+    implementation "androidx.room:room-runtime:2.8.5"
+    annotationProcessor "androidx.room:room-compiler:2.8.5"
+    androidTestImplementation "androidx.room:room-testing:2.8.5"
+    androidTestImplementation "androidx.test:core:1.6.1"
+
+    // WorkManager replaces the API-process scheduler with local background work.
+    implementation "androidx.work:work-runtime:2.12.0"
+    androidTestImplementation "androidx.work:work-testing:2.12.0"
 }
 
 apply from: 'capacitor.build.gradle'
