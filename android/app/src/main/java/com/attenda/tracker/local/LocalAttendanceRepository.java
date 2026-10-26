@@ -85,7 +85,7 @@ public final class LocalAttendanceRepository {
             case "notifications.settings.save": result = saveNotificationSettings(p); break;
             case "notifications.summary": result = notificationSummary(); break;
             case "notifications.summary.markSent": result = markNotificationSummarySent(required(p, "date")); break;
-            case "notifications.reminders": result = notificationReminders(p.optInt("days", 14)); break;
+            case "notifications.reminders": result = new JSONObject().put("reminders", notificationReminders(p.optInt("days", 14))); break;
             case "notifications.classReminder": result = classReminder(p); break;
             case "backup.snapshot": result = backupSnapshot(); break;
             case "backup.restore": result = restoreBackup(p); break;

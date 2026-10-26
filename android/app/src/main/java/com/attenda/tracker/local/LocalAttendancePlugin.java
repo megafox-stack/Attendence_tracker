@@ -169,6 +169,7 @@ public final class LocalAttendancePlugin extends Plugin {
 
     private static boolean affectsNotifications(String action) {
         return "semester.save".equals(action) || "semester.create".equals(action) || "semester.select".equals(action) || "semester.delete".equals(action)
+                || "subject.update".equals(action)
                 || "timetable.create".equals(action) || "timetable.update".equals(action) || "timetable.active".equals(action) || "timetable.delete".equals(action)
                 || "holiday.create".equals(action) || "holiday.delete".equals(action)
                 || "notifications.settings.save".equals(action) || "backup.restore".equals(action);

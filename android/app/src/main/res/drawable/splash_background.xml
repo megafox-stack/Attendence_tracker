@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient android:angle="90" android:startColor="#F8FBFF" android:endColor="#EAF3FF" />
+        </shape>
+    </item>
+    <item
+        android:width="220dp"
+        android:height="220dp"
+        android:drawable="@drawable/splash_glow"
+        android:gravity="center" />
+    <item
+        android:width="128dp"
+        android:height="128dp"
+        android:drawable="@drawable/attendance_icon_foreground"
+        android:gravity="center" />
+    <item
+        android:bottom="56dp"
+        android:width="280dp"
+        android:height="66dp"
+        android:drawable="@drawable/splash_wordmark"
+        android:gravity="bottom|center_horizontal" />
+</layer-list>

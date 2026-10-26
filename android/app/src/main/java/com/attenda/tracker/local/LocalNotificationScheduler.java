@@ -51,7 +51,7 @@ public final class LocalNotificationScheduler {
             long delay = millisUntilNextEightPm(zone);
             PeriodicWorkRequest summary = new PeriodicWorkRequest.Builder(NotificationDigestWorker.class, 24, TimeUnit.HOURS)
                     .setInitialDelay(delay, TimeUnit.MILLISECONDS).build();
-            work.enqueueUniquePeriodicWork(DAILY_DIGEST, ExistingPeriodicWorkPolicy.KEEP, summary);
+            work.enqueueUniquePeriodicWork(DAILY_DIGEST, ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE, summary);
         } else work.cancelUniqueWork(DAILY_DIGEST);
     }
 
