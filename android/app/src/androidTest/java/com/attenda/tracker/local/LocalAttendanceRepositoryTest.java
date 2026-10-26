@@ -121,6 +121,60 @@ public class LocalAttendanceRepositoryTest {
         assertEquals(100.0, dashboard.getJSONObject("summary").getDouble("attendancePercent"), 0.0);
     }
 
+    @Test public void reminderCandidatesRespectActiveEntriesHolidaysAndTimetableChanges() throws Exception {
+        LocalDate date = LocalDate.now().plusDays(2);
+        String day = dayName(date.getDayOfWeek());
+        String entryId = seed(date, day);
+        JSONObject initial = repository.execute("notifications.reminders", new JSONObject().put("days", 14));
+        assertEquals(1, initial.getJSONArray("reminders").length());
+
+        com.attenda.tracker.local.Entities.TimetableEntry entry = database.timetable().byId(entryId);
+        entry.active = false;
+        database.timetable().update(entry);
+        assertEquals(0, repository.execute("notifications.reminders", new JSONObject().put("days", 14)).getJSONArray("reminders").length());
+
+        entry.active = true;
+        database.timetable().update(entry);
+        repository.execute("holiday.create", new JSONObject().put("date", date.toString()).put("reason", "No classes"));
+        assertEquals(0, repository.execute("notifications.reminders", new JSONObject().put("days", 14)).getJSONArray("reminders").length());
+
+        com.attenda.tracker.local.Entities.Holiday holiday = database.holidays().byDate(database.semesters().current().id, date.toString());
+        database.holidays().delete(holiday.id);
+        entry.start = "13:00";
+        entry.end = "14:00";
+        database.timetable().update(entry);
+        JSONObject changed = repository.execute("notifications.reminders", new JSONObject().put("days", 14));
+        assertEquals(1, changed.getJSONArray("reminders").length());
+        assertEquals("13:00", changed.getJSONArray("reminders").getJSONObject(0).getString("start"));
+    }
+
+    @Test public void dailySummaryUsesPendingAndConfiguredTargetsAndIsDeduplicatedByDate() throws Exception {
+        LocalDate today = LocalDate.now();
+        String day = dayName(today.getDayOfWeek());
+        seed(today, day);
+        String subjectId = database.subjects().bySemester(database.semesters().current().id).get(0).id;
+        repository.execute("subject.update", new JSONObject().put("id", subjectId).put("name", "Entered subject").put("code", "SUB-1").put("attendanceTargetPercent", 80));
+        JSONObject generated = repository.execute("attendance.generate", new JSONObject().put("date", today.toString()));
+        String occurrenceId = generated.getJSONArray("records").getJSONObject(0).getString("id");
+        repository.execute("attendance.update", new JSONObject().put("id", occurrenceId).put("status", "Absent"));
+
+        JSONObject summary = repository.execute("notifications.summary", new JSONObject());
+        assertEquals(0, summary.getInt("pending"));
+        assertEquals(1, summary.getInt("belowTarget"));
+        assertEquals(true, summary.getBoolean("shouldNotify"));
+        repository.execute("notifications.summary.markSent", new JSONObject().put("date", today.toString()));
+        assertEquals(true, repository.execute("notifications.summary", new JSONObject()).getBoolean("alreadySent"));
+    }
+
+    @Test public void dailySummaryStaysSilentWhenThereIsNothingToReport() throws Exception {
+        LocalDate today = LocalDate.now();
+        seed(today, dayName(today.getDayOfWeek()));
+        JSONObject summary = repository.execute("notifications.summary", new JSONObject());
+        assertEquals(0, summary.getInt("pending"));
+        assertEquals(0, summary.getInt("belowTarget"));
+        assertEquals(false, summary.getBoolean("shouldNotify"));
+    }
+
     @Test public void foreignKeyRejectsSubjectWithoutSemester() {
         com.attenda.tracker.local.Entities.Subject subject = new com.attenda.tracker.local.Entities.Subject();
         subject.id = "orphan"; subject.semesterId = "missing"; subject.name = "Subject"; subject.code = "X";

@@ -81,6 +81,12 @@ public final class LocalAttendanceRepository {
             case "settings.get": result = getSetting(required(p, "key")); break;
             case "settings.save": result = saveSetting(p); break;
             case "settings.delete": result = deleteSetting(required(p, "key")); break;
+            case "notifications.settings.get": result = notificationSettings(); break;
+            case "notifications.settings.save": result = saveNotificationSettings(p); break;
+            case "notifications.summary": result = notificationSummary(); break;
+            case "notifications.summary.markSent": result = markNotificationSummarySent(required(p, "date")); break;
+            case "notifications.reminders": result = notificationReminders(p.optInt("days", 14)); break;
+            case "notifications.classReminder": result = classReminder(p); break;
             case "backup.snapshot": result = backupSnapshot(); break;
             case "backup.restore": result = restoreBackup(p); break;
             default: throw new IllegalArgumentException("Unsupported local data operation: " + action);
@@ -449,6 +455,89 @@ public final class LocalAttendanceRepository {
     private JSONObject deleteSetting(String key) throws Exception {
         validateSettingKey(key);
         return new JSONObject().put("deleted", db.settings().delete(key) > 0);
+    }
+
+    private JSONObject notificationSettings() throws Exception {
+        return new JSONObject()
+                .put("classReminders", "true".equalsIgnoreCase(db.settings().get("notificationClassReminders")))
+                .put("dailySummary", "true".equalsIgnoreCase(db.settings().get("notificationDailySummary")));
+    }
+
+    private JSONObject saveNotificationSettings(JSONObject payload) throws Exception {
+        boolean classReminders = payload.optBoolean("classReminders", false);
+        boolean dailySummary = payload.optBoolean("dailySummary", false);
+        transaction(() -> {
+            putSetting("notificationClassReminders", Boolean.toString(classReminders));
+            putSetting("notificationDailySummary", Boolean.toString(dailySummary));
+        });
+        return notificationSettings();
+    }
+
+    private JSONObject notificationSummary() throws Exception {
+        Semester semester = db.semesters().current();
+        if (semester == null) return new JSONObject().put("date", JSONObject.NULL).put("pending", 0).put("belowTarget", 0).put("shouldNotify", false);
+        ZoneId zone = ZoneId.of(semester.timeZone);
+        String today = LocalDate.now(zone).toString();
+        int pending = 0;
+        for (ClassOccurrence record : db.occurrences().byDate(today)) if (semester.id.equals(record.semesterId) && "PENDING".equals(record.status)) pending++;
+        int belowTarget = 0;
+        JSONArray subjects = attendanceSubjects(null);
+        for (int i = 0; i < subjects.length(); i++) {
+            JSONObject subject = subjects.getJSONObject(i);
+            if (!subject.isNull("targetPercent") && !subject.isNull("attendancePercent") && subject.getDouble("attendancePercent") < subject.getDouble("targetPercent")) belowTarget++;
+        }
+        boolean alreadySent = today.equals(db.settings().get("notificationDailySummaryLastDate"));
+        return new JSONObject().put("date", today).put("pending", pending).put("belowTarget", belowTarget).put("alreadySent", alreadySent).put("shouldNotify", pending > 0 || belowTarget > 0);
+    }
+
+    private JSONObject markNotificationSummarySent(String date) throws Exception {
+        validDate(date, "notification date");
+        String currentDate = notificationSummary().optString("date", "");
+        if (!date.equals(currentDate)) return new JSONObject().put("marked", false);
+        putSetting("notificationDailySummaryLastDate", date);
+        return new JSONObject().put("marked", true);
+    }
+
+    private JSONArray notificationReminders(int horizonDays) throws Exception {
+        JSONArray reminders = new JSONArray();
+        Semester semester = db.semesters().current();
+        if (semester == null || horizonDays < 1 || horizonDays > 31) return reminders;
+        ZoneId zone = ZoneId.of(semester.timeZone);
+        LocalDate today = LocalDate.now(zone);
+        LocalDate lastDate = today.plusDays(horizonDays);
+        if (lastDate.isAfter(LocalDate.parse(semester.endDate))) lastDate = LocalDate.parse(semester.endDate);
+        List<TimetableEntry> entries = db.timetable().bySemester(semester.id);
+        for (LocalDate date = today; !date.isAfter(lastDate); date = date.plusDays(1)) {
+            if (date.isBefore(LocalDate.parse(semester.startDate)) || (semester.workingDaysMask & (1 << (date.getDayOfWeek().getValue() - 1))) == 0) continue;
+            if (db.holidays().byDate(semester.id, date.toString()) != null) continue;
+            for (TimetableEntry entry : entries) {
+                if (!entry.active || entry.historicalOnly || !entry.day.equals(dayName(date.getDayOfWeek().getValue() - 1))) continue;
+                if (date.toString().compareTo(entry.effectiveFrom) < 0 || date.toString().compareTo(entry.effectiveUntil) > 0) continue;
+                java.time.Instant fireAt = LocalDate.parse(date.toString()).atTime(LocalTime.parse(entry.start)).atZone(zone).minusMinutes(10).toInstant();
+                if (!fireAt.isAfter(java.time.Instant.now())) continue;
+                Subject subject = db.subjects().byId(entry.subjectId);
+                if (subject == null || !subject.active) continue;
+                reminders.put(new JSONObject().put("entryId", entry.id).put("semesterId", semester.id).put("date", date.toString()).put("fireAt", fireAt.toEpochMilli()).put("subject", subject.name).put("code", subject.code).put("start", entry.start).put("room", entry.room == null ? JSONObject.NULL : entry.room));
+            }
+        }
+        return reminders;
+    }
+
+    private JSONObject classReminder(JSONObject payload) throws Exception {
+        String entryId = required(payload, "entryId");
+        String semesterId = required(payload, "semesterId");
+        String date = validDate(required(payload, "date"), "class date");
+        Semester semester = db.semesters().current();
+        if (semester == null || !semester.id.equals(semesterId)) return new JSONObject().put("valid", false);
+        TimetableEntry entry = db.timetable().byId(entryId);
+        if (entry == null || !entry.active || entry.historicalOnly || !entry.semesterId.equals(semesterId)) return new JSONObject().put("valid", false);
+        LocalDate classDate = LocalDate.parse(date);
+        if (date.compareTo(semester.startDate) < 0 || date.compareTo(semester.endDate) > 0 || date.compareTo(entry.effectiveFrom) < 0 || date.compareTo(entry.effectiveUntil) > 0) return new JSONObject().put("valid", false);
+        if ((semester.workingDaysMask & (1 << (classDate.getDayOfWeek().getValue() - 1))) == 0 || !entry.day.equals(dayName(classDate.getDayOfWeek().getValue() - 1)) || db.holidays().byDate(semesterId, date) != null) return new JSONObject().put("valid", false);
+        if (!classDate.atTime(LocalTime.parse(entry.start)).atZone(ZoneId.of(semester.timeZone)).toInstant().isAfter(java.time.Instant.now())) return new JSONObject().put("valid", false);
+        Subject subject = db.subjects().byId(entry.subjectId);
+        if (subject == null || !subject.active) return new JSONObject().put("valid", false);
+        return new JSONObject().put("valid", true).put("subject", subject.name).put("start", entry.start).put("room", entry.room == null ? JSONObject.NULL : entry.room).put("date", date);
     }
 
     private static void validateSettingKey(String key) {

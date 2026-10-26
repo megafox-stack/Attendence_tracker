@@ -87,6 +87,20 @@ body{background:radial-gradient(ellipse at 48% 4%,#ffffff 0,#f5f9ff 48%,#edf5ff 
 .semester-switcher select{width:100%;min-height:36px;padding:0 9px;border:1px solid #e2eaf4;border-radius:8px;color:#40546f;background:#fff;font:inherit;font-weight:500}
 .semester-add-button{margin-top:9px}
 .semester-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.notification-setting-list{display:grid;gap:5px;margin-top:16px}
+.notification-setting-row{display:flex;align-items:center;gap:11px;padding:12px 0;border-bottom:1px solid #edf1f6;cursor:pointer}
+.notification-setting-icon{display:grid;place-items:center;width:34px;height:34px;flex-shrink:0;border-radius:10px;color:#367ce0;background:#edf4ff}
+.notification-setting-copy{display:grid;flex:1;gap:4px;min-width:0}
+.notification-setting-copy strong,.notification-permission strong{color:#40516a;font-size:11px}
+.notification-setting-copy small,.notification-permission small{color:#8a98aa;font-size:9px;line-height:1.5}
+.notification-permission{display:flex;align-items:center;gap:9px;padding:11px;border:1px solid #f0e8d8;border-radius:9px;background:#fffbf4}
+.notification-permission.permission-granted{border-color:#d9eee5;background:#f5fcf8}
+.notification-permission>div{display:grid;flex:1;gap:3px}
+.notification-permission-icon{display:grid;place-items:center;width:29px;height:29px;flex-shrink:0;border-radius:8px;color:#c88932;background:#fff1d9}
+.permission-granted .notification-permission-icon{color:#168960;background:#e2f6ec}
+.notification-footnote{margin:13px 0 0;color:#8b98aa;font-size:9px;line-height:1.6}
+.notification-message{margin:12px 0 0;padding:9px 10px;border:1px solid #e6edf6;border-radius:8px;color:#687a94;background:#f8faff;font-size:9px;line-height:1.5}
+.notification-loading{display:flex;align-items:center;gap:7px;margin:8px 0;color:#8593a7;font-size:10px}
 .scheduler-card-icon,.summary-card-icon,.semester-detail-icon{color:#1478ef;background:#eaf3ff}
 .day-button.selected{border-color:#267bf2;background:#1874f7}
 .timetable-panel{background:#fff}

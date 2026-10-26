@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { CalendarCheck, CalendarDays, Check, CheckCheck, CircleX, ClipboardCheck, Clock3, LoaderCircle, ShieldCheck, SquareCheckBig, X } from 'lucide-react';
 import { Field, Notice, Overlay, PageHeading, SelectField } from '../App.jsx';
 import { ApiError, ApiUnavailableError, hasSessionToken } from '../services/apiClient.js';
@@ -9,7 +10,9 @@ import { localDateToday } from '../utils/dateUtils.js';
 const statuses = ['Pending', 'Present', 'Absent', 'Cancelled'];
 
 export default function DailyReviewPage() {
-  const [date, setDate] = useState(localDateToday());
+  const location = useLocation();
+  const notificationDate = new URLSearchParams(location.search).get('date');
+  const [date, setDate] = useState(() => new URLSearchParams(globalThis.location.search).get('date') || localDateToday());
   const [selection, setSelection] = useState([]);
   const [changes, setChanges] = useState({});
   const [notes, setNotes] = useState({});
@@ -21,6 +24,8 @@ export default function DailyReviewPage() {
   const [submitOpen, setSubmitOpen] = useState(false);
   const [notice, setNotice] = useState('');
   const [validation, setValidation] = useState('');
+
+  useEffect(() => { if (notificationDate) setDate(notificationDate); }, [notificationDate]);
 
   useEffect(() => {
     let active = true;
