@@ -1,5 +1,7 @@
 .scheduler-enabled{color:#16845b;background:#e9fbf3;border-color:#c8f2df}.scheduler-enabled>span:first-child{background:#20ad75}
 .scheduler-error{color:#b84848;background:#fff0f0;border-color:#f2d4d4}.scheduler-error>span:first-child{background:#de5d5d}
+.daily-heading-actions{display:flex;align-items:center;gap:5px;flex-shrink:0}
+@media(max-width:650px){.daily-list-heading{align-items:stretch;flex-direction:column}.daily-heading-actions{width:100%;justify-content:space-between}}
 .home-class-list,.attendance-subject-list,.history-record-list,.insight-subject-list{display:grid;gap:8px;margin-top:12px}
 .home-class-row,.history-record{display:flex;align-items:center;gap:9px;min-width:0;padding:9px;border:1px solid #edf1f7;border-radius:10px;background:#fff}
 .home-class-row:hover{border-color:#c9dcfa;background:#fbfdff}

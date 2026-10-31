@@ -1,19 +1,19 @@
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
-import { Activity, Bell, CalendarDays, Check, CircleHelp, Home, ListChecks, Sparkles, X } from 'lucide-react';
+import { Bell, CalendarDays, Check, CircleHelp, Home, ListChecks, ClipboardCheck, Sparkles, X } from 'lucide-react';
 import HomePage from './pages/HomePage.jsx';
 import AttendancePage from './pages/AttendancePage.jsx';
 import TimetablePage from './pages/TimetablePage.jsx';
 import DailyReviewPage from './pages/DailyReviewPage.jsx';
-import InsightsPage from './pages/InsightsPage.jsx';
+import ManualAttendancePage from './pages/ManualAttendancePage.jsx';
 import NotificationSettingsModal from './components/NotificationSettingsModal.jsx';
 
 export const navItems = [
   { to: '/', label: 'Home', icon: Home },
   { to: '/attendance', label: 'Attendance', icon: ListChecks },
   { to: '/timetable', label: 'Timetable', icon: CalendarDays },
-  { to: '/insights', label: 'Insights', icon: Activity },
+  { to: '/insights', label: 'Manual Attendance', icon: ClipboardCheck },
 ];
 
 export function PageHeading({ eyebrow, title, description, action }) {
@@ -52,7 +52,7 @@ function AppShell() {
   }, [navigate]);
   return <div className="app-shell"><div className="ambient ambient-one" /><div className="ambient ambient-two" />
     <header className="topbar"><NavLink to="/" className="brand"><span className="brand-mark"><CalendarDays size={18} /></span><span><strong>Attendance Tracker</strong><small>ATTENDANCE TRACKER</small></span></NavLink><div className="topbar-right"><span className="connection-pill connection-ready" title={Capacitor.isNativePlatform() ? 'Data is saved on this device' : 'Open the installed Android app to use local storage'}><span className="connection-dot" />{Capacitor.isNativePlatform() ? 'On this device' : 'Android app required'}</span><button type="button" className="icon-button notification-button" aria-label="Notification settings" title="Notification settings" onClick={() => setNotificationSettingsOpen(true)}><Bell size={18} /></button></div></header>
-    <div className="body-layout"><main className="main-area"><div className="content-width"><Routes><Route path="/" element={<HomePage />} /><Route path="/attendance" element={<AttendancePage />} /><Route path="/timetable" element={<TimetablePage />} /><Route path="/review" element={<DailyReviewPage />} /><Route path="/insights" element={<InsightsPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes><footer className="page-footer">Attendance data is stored on this device and is available offline.</footer></div></main></div>
+    <div className="body-layout"><main className="main-area"><div className="content-width"><Routes><Route path="/" element={<HomePage />} /><Route path="/attendance" element={<AttendancePage />} /><Route path="/timetable" element={<TimetablePage />} /><Route path="/review" element={<DailyReviewPage />} /><Route path="/insights" element={<ManualAttendancePage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes><footer className="page-footer">Attendance data is stored on this device and is available offline.</footer></div></main></div>
     <nav className="bottom-nav" aria-label="Main navigation">{navItems.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end={to === '/'} aria-label={label} className={({ isActive }) => `bottom-link${isActive || (to === '/attendance' && location.pathname === '/review') ? ' active' : ''}`}><Icon size={19} /><span>{label}</span></NavLink>)}</nav>
     {notificationSettingsOpen && <NotificationSettingsModal onClose={() => setNotificationSettingsOpen(false)} />}
   </div>;

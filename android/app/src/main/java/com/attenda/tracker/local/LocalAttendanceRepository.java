@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -29,6 +30,7 @@ import org.json.JSONObject;
 public final class LocalAttendanceRepository {
     private static final String[] DAYS = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"};
     private static final String[] STATUSES = {"PENDING", "PRESENT", "ABSENT", "CANCELLED"};
+    private static final String MANUAL_DRAFT_KEY = "manualAttendanceDraftV1";
     private static volatile AttendanceDatabase instance;
     private final AttendanceDatabase db;
 
@@ -76,6 +78,11 @@ public final class LocalAttendanceRepository {
             case "attendance.subjects": result = new JSONObject().put("subjects", attendanceSubjects(null)); break;
             case "attendance.insights": result = insights(p); break;
             case "attendance.reset": result = resetAttendance(); break;
+            case "manual.draft.get": result = manualDraftGet(); break;
+            case "manual.draft.save": result = manualDraftSave(p.optJSONArray("items")); break;
+            case "manual.draft.clear": result = manualDraftClear(); break;
+            case "manual.validate": result = manualValidate(p.optJSONArray("items")); break;
+            case "manual.commit": result = manualCommit(p.optJSONArray("items")); break;
             case "scheduler.status": result = schedulerStatus(); break;
             case "scheduler.update": result = updateScheduler(p.optBoolean("enabled", false)); break;
             case "settings.get": result = getSetting(required(p, "key")); break;
@@ -253,19 +260,25 @@ public final class LocalAttendanceRepository {
         if (date.compareTo(s.startDate) < 0 || date.compareTo(s.endDate) > 0) throw new IllegalArgumentException("Holiday date must fall within the current semester.");
         Holiday existing = db.holidays().byDate(s.id, date); if (existing != null) throw new IllegalArgumentException("A holiday already exists on this date.");
         final int[] cancelled = {0};
-        transaction(() -> {
-            Holiday holiday = new Holiday(); holiday.id = uuid(); holiday.semesterId = s.id; holiday.date = date; holiday.reason = reason.isEmpty() ? null : reason;
-            db.holidays().insert(holiday);
-            long now = System.currentTimeMillis();
-            for (ClassOccurrence record : db.occurrences().byDate(date)) {
-                if (record.semesterId.equals(s.id) && "PENDING".equals(record.status)) {
-                    AttendanceChange audit = change(record, "CANCELLED", reason.isEmpty() ? "Holiday configured for this class date." : ("Holiday: " + reason).substring(0, Math.min(500, reason.length() + 9)), now);
-                    audit.actorType = "system"; db.changes().insert(audit);
-                    record.status = "CANCELLED"; record.finalizedAt = now; db.occurrences().update(record); cancelled[0]++;
-                }
-            }
-        });
+        transaction(() -> cancelled[0] = createHolidayInTransaction(s, date, reason));
         return new JSONObject().put("holiday", holidayJson(db.holidays().byDate(s.id, date))).put("pendingRecordsCancelled", cancelled[0]);
+    }
+
+    private int createHolidayInTransaction(Semester semester, String date, String reason) throws Exception {
+        Holiday existing = db.holidays().byDate(semester.id, date);
+        if (existing != null) throw new IllegalArgumentException("A holiday already exists on this date.");
+        Holiday holiday = new Holiday(); holiday.id = uuid(); holiday.semesterId = semester.id; holiday.date = date; holiday.reason = reason.isEmpty() ? null : reason;
+        db.holidays().insert(holiday);
+        long now = System.currentTimeMillis(); int cancelled = 0;
+        for (ClassOccurrence record : db.occurrences().byDate(date)) {
+            if (record.semesterId.equals(semester.id) && "PENDING".equals(record.status)) {
+                String message = reason.isEmpty() ? "Holiday configured for this class date." : ("Holiday: " + reason).substring(0, Math.min(500, reason.length() + 9));
+                AttendanceChange audit = change(record, "CANCELLED", message, now);
+                audit.actorType = "system"; db.changes().insert(audit);
+                record.status = "CANCELLED"; record.finalizedAt = now; db.occurrences().update(record); cancelled++;
+            }
+        }
+        return cancelled;
     }
 
     private JSONObject deleteHoliday(String id) throws Exception {
@@ -309,7 +322,7 @@ public final class LocalAttendanceRepository {
     private JSONObject deleteOccurrence(String id) throws Exception {
         ClassOccurrence record = db.occurrences().byId(id);
         if (record == null) throw new IllegalArgumentException("Attendance record not found.");
-        transaction(() -> db.occurrences().delete(id));
+        transaction(() -> { db.occurrences().delete(id); db.timetable().deleteOrphanedHistorical(); });
         return new JSONObject().put("deleted", true).put("id", id).put("date", record.classDate);
     }
 
@@ -334,6 +347,242 @@ public final class LocalAttendanceRepository {
         JSONObject result = applyChanges(date, changes);
         result.put("saved", true);
         return result;
+    }
+
+    private JSONObject manualDraftGet() throws Exception {
+        String value = db.settings().get(MANUAL_DRAFT_KEY);
+        JSONArray items = new JSONArray(value == null || value.trim().isEmpty() ? "[]" : value);
+        return new JSONObject().put("value", items.toString()).put("count", items.length());
+    }
+
+    private JSONObject manualDraftSave(JSONArray items) throws Exception {
+        if (items == null || items.length() > 500) throw new IllegalArgumentException("Keep no more than 500 staged attendance rows at a time.");
+        String value = items.toString();
+        if (value.length() > 1_000_000) throw new IllegalArgumentException("The staged attendance list is too large to save on this device.");
+        putSetting(MANUAL_DRAFT_KEY, value);
+        return new JSONObject().put("saved", true).put("count", items.length());
+    }
+
+    private JSONObject manualDraftClear() throws Exception {
+        return new JSONObject().put("cleared", db.settings().delete(MANUAL_DRAFT_KEY) > 0);
+    }
+
+    private JSONObject manualValidate(JSONArray items) throws Exception {
+        return analyzeManualItems(items, requireCurrentSemester());
+    }
+
+    private JSONObject manualCommit(JSONArray items) throws Exception {
+        final JSONObject[] committed = {null};
+        transaction(() -> {
+            Semester semester = requireCurrentSemester();
+            JSONObject analysis = analyzeManualItems(items, semester);
+            JSONObject summary = analysis.getJSONObject("summary");
+            if (summary.getInt("unresolved") > 0) throw new IllegalArgumentException("Resolve or skip every invalid row and conflict before saving. No records were changed.");
+
+            int created = 0, updated = 0, skipped = 0, holidaysCreated = 0, holidaysUpdated = 0, pendingCancelled = 0;
+            JSONArray checkedRows = analysis.getJSONArray("rows");
+            for (int index = 0; index < checkedRows.length(); index++) {
+                JSONObject checked = checkedRows.getJSONObject(index);
+                String decision = checked.optString("decision", "");
+                if ("skip".equals(decision)) { skipped++; continue; }
+                if (!checked.optBoolean("ready")) throw new IllegalArgumentException("A staged attendance row changed or is not valid. Review the list again. No records were changed.");
+
+                String status = checked.getString("status");
+                String date = checked.getString("date");
+                String reason = checked.optString("note", "").trim();
+                if ("Holiday".equals(status)) {
+                    String existingHolidayId = checked.optString("existingHolidayId", "");
+                    if (!existingHolidayId.isEmpty() && "replace".equals(decision)) {
+                        Holiday holiday = db.holidays().byDate(semester.id, date);
+                        if (holiday == null || !holiday.id.equals(existingHolidayId)) throw new IllegalArgumentException("A holiday changed while this batch was being reviewed. No records were changed.");
+                        holiday.reason = reason.isEmpty() ? null : reason;
+                        db.holidays().update(holiday);
+                        holidaysUpdated++;
+                    } else {
+                        pendingCancelled += createHolidayInTransaction(semester, date, reason);
+                        holidaysCreated++;
+                    }
+                    continue;
+                }
+
+                String existingId = checked.optString("existingId", "");
+                if (!existingId.isEmpty() && "replace".equals(decision)) {
+                    ClassOccurrence existing = db.occurrences().byId(existingId);
+                    if (existing == null || !existing.semesterId.equals(semester.id) || !existing.classDate.equals(date)
+                            || !existing.subjectId.equals(checked.getString("subjectId"))
+                            || !existing.start.equals(checked.getString("start")) || !existing.end.equals(checked.getString("end"))) {
+                        throw new IllegalArgumentException("An attendance record changed while this batch was being reviewed. No records were changed.");
+                    }
+                    if (applyOne(existing, normalizeStatus(status), reason, true)) updated++;
+                    continue;
+                }
+
+                Subject subject = db.subjects().byId(checked.getString("subjectId"));
+                if (subject == null || !subject.semesterId.equals(semester.id) || !subject.active) throw new IllegalArgumentException("A subject changed while this batch was being reviewed. No records were changed.");
+                String start = checked.getString("start"), end = checked.getString("end");
+                TimetableEntry entry = findManualEntry(semester, subject.id, date, start, end);
+                if (entry == null) {
+                    entry = new TimetableEntry(); entry.id = uuid(); entry.semesterId = semester.id; entry.subjectId = subject.id;
+                    entry.day = dayName(LocalDate.parse(date).getDayOfWeek().getValue() - 1); entry.start = start; entry.end = end;
+                    entry.effectiveFrom = date; entry.effectiveUntil = date; entry.active = false; entry.historicalOnly = true;
+                    db.timetable().insert(entry);
+                }
+                ClassOccurrence occurrence = new ClassOccurrence(); occurrence.id = uuid(); occurrence.semesterId = semester.id;
+                occurrence.timetableEntryId = entry.id; occurrence.subjectId = subject.id; occurrence.classDate = date;
+                occurrence.start = start; occurrence.end = end; occurrence.subjectNameSnapshot = subject.name;
+                occurrence.subjectCodeSnapshot = subject.code; occurrence.roomSnapshot = entry.room; occurrence.status = "PENDING";
+                occurrence.note = reason.isEmpty() ? null : reason; occurrence.generatedAt = System.currentTimeMillis();
+                db.occurrences().insert(occurrence);
+                String normalized = normalizeStatus(status);
+                if (!"PENDING".equals(normalized)) applyOne(occurrence, normalized, reason, false);
+                created++;
+            }
+            db.settings().delete(MANUAL_DRAFT_KEY);
+            committed[0] = new JSONObject().put("saved", true).put("created", created).put("updated", updated)
+                    .put("skipped", skipped).put("holidaysCreated", holidaysCreated).put("holidaysUpdated", holidaysUpdated)
+                    .put("pendingCancelledByHoliday", pendingCancelled).put("total", items.length());
+        });
+        return committed[0];
+    }
+
+    private JSONObject analyzeManualItems(JSONArray items, Semester semester) throws Exception {
+        if (items == null || items.length() == 0 || items.length() > 500) throw new IllegalArgumentException("Stage between 1 and 500 attendance rows before reviewing them.");
+        JSONArray rows = new JSONArray();
+        Set<String> seen = new HashSet<>();
+        Set<String> rowIds = new HashSet<>();
+        Set<String> holidayDates = new HashSet<>(), classDates = new HashSet<>();
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.optJSONObject(index);
+            if (item == null || "skip".equals(item.optString("decision", ""))) continue;
+            try {
+                String stagedDate = validDate(item.optString("date", "").trim(), "attendance date");
+                if ("holiday".equalsIgnoreCase(item.optString("status", "").trim())) holidayDates.add(stagedDate);
+                else classDates.add(stagedDate);
+            } catch (IllegalArgumentException ignored) { /* reported against its row below */ }
+        }
+        Set<String> mixedHolidayDates = new HashSet<>(holidayDates); mixedHolidayDates.retainAll(classDates);
+        int valid = 0, invalid = 0, duplicates = 0, conflicts = 0, ready = 0, skipped = 0, unresolved = 0;
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject input = items.optJSONObject(index);
+            if (input == null) input = new JSONObject();
+            String id = input.optString("id", "");
+            String source = input.optString("source", "manual");
+            String decision = input.optString("decision", "");
+            String rawDate = input.optString("date", "").trim();
+            String date = rawDate;
+            String rawStatus = input.optString("status", "").trim();
+            String status = rawStatus;
+            String subjectId = input.optString("subjectId", "").trim();
+            String start = input.optString("start", "").trim();
+            String end = input.optString("end", "").trim();
+            String note = input.optString("note", "").trim();
+            JSONArray problems = new JSONArray();
+            JSONObject conflict = null;
+            boolean dateValid = false;
+            boolean isHoliday = "holiday".equalsIgnoreCase(rawStatus);
+
+            if (id.isEmpty() || !rowIds.add(id)) problems.put("Each staged row needs a unique row ID.");
+            if (!"manual".equals(source) && !"csv".equals(source) && !"xlsx".equals(source)) problems.put("This row has an unsupported source type.");
+
+            try { date = validDate(rawDate, "attendance date"); dateValid = true; }
+            catch (IllegalArgumentException error) { problems.put(error.getMessage()); }
+            if (dateValid && (date.compareTo(semester.startDate) < 0 || date.compareTo(semester.endDate) > 0)) problems.put("The date must be within the selected semester.");
+            if (dateValid && mixedHolidayDates.contains(date)) problems.put("A holiday and individual class attendance cannot be saved for the same date in one batch.");
+            if (note.length() > 500) problems.put("Notes must be 500 characters or fewer.");
+
+            Subject subject = null;
+            if (!isHoliday) {
+                try { status = normalizeStatus(rawStatus); }
+                catch (Exception error) { problems.put("Choose Pending, Present, Absent, or Cancelled."); }
+                subject = subjectId.isEmpty() ? null : db.subjects().byId(subjectId);
+                if (subject == null || !subject.semesterId.equals(semester.id) || !subject.active) problems.put("Choose an active subject from the selected semester.");
+                try { start = validTime(start); end = validTime(end); if (end.compareTo(start) <= 0) problems.put("Class end time must be later than its start time."); }
+                catch (IllegalArgumentException error) { problems.put("Enter a valid class period using 24-hour start and end times."); }
+                if (note.length() > 500) problems.put("Notes must be 500 characters or fewer.");
+            } else if (note.length() > 240) problems.put("Holiday reason must be 240 characters or fewer.");
+
+            String existingId = "", existingStatus = "", existingHolidayId = "";
+            if (dateValid && date.compareTo(semester.startDate) >= 0 && date.compareTo(semester.endDate) <= 0) {
+                Holiday existingHoliday = db.holidays().byDate(semester.id, date);
+                List<ClassOccurrence> dated = db.occurrences().byDate(date);
+                if (isHoliday) {
+                    boolean finalizedOnDate = false, pendingOnDate = false;
+                    for (ClassOccurrence occurrence : dated) if (semester.id.equals(occurrence.semesterId)) {
+                        if ("PRESENT".equals(occurrence.status) || "ABSENT".equals(occurrence.status)) finalizedOnDate = true;
+                        if ("PENDING".equals(occurrence.status)) pendingOnDate = true;
+                    }
+                    if (finalizedOnDate && existingHoliday == null) problems.put("This date already has Present or Absent records. Resolve those records before adding a holiday.");
+                    else if (existingHoliday != null) {
+                        existingHolidayId = existingHoliday.id;
+                        conflict = new JSONObject().put("type", "existing_holiday").put("message", "A holiday already exists for this date.").put("options", new JSONArray().put("replace").put("skip"));
+                    } else if (pendingOnDate) {
+                        conflict = new JSONObject().put("type", "holiday_pending").put("message", "Applying this holiday will mark existing Pending class records as Cancelled.").put("options", new JSONArray().put("apply").put("skip"));
+                    }
+                } else if (existingHoliday != null) {
+                    conflict = new JSONObject().put("type", "date_is_holiday").put("message", "This date is already marked as a holiday. Remove the holiday or skip this row.").put("options", new JSONArray().put("skip"));
+                } else if (subject != null && !start.isEmpty() && !end.isEmpty()) {
+                    for (ClassOccurrence occurrence : db.occurrences().bySubject(subject.id)) {
+                        if (!semester.id.equals(occurrence.semesterId) || !date.equals(occurrence.classDate)) continue;
+                        if (start.equals(occurrence.start) && end.equals(occurrence.end)) {
+                            existingId = occurrence.id; existingStatus = titleStatus(occurrence.status);
+                            conflict = new JSONObject().put("type", "existing_record").put("message", "An attendance record already exists for this subject, date, and period.")
+                                    .put("existingId", existingId).put("existingStatus", existingStatus).put("options", new JSONArray().put("replace").put("skip"));
+                            break;
+                        }
+                    }
+                    if (conflict == null) {
+                        for (ClassOccurrence occurrence : dated) {
+                            if (!semester.id.equals(occurrence.semesterId) || start.compareTo(occurrence.end) >= 0 || end.compareTo(occurrence.start) <= 0) continue;
+                            conflict = new JSONObject().put("type", "overlapping_record").put("message", "This period overlaps another attendance record on the selected date.")
+                                    .put("existingStatus", titleStatus(occurrence.status)).put("options", new JSONArray().put("allow").put("skip"));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            String duplicateKey = isHoliday ? "holiday|" + date : subjectId + "|" + date + "|" + start + "|" + end;
+            boolean enoughIdentity = dateValid && (isHoliday || (!subjectId.isEmpty() && !start.isEmpty() && !end.isEmpty()));
+            if (enoughIdentity && !seen.add(duplicateKey)) {
+                conflict = new JSONObject().put("type", "duplicate_staged_row").put("message", "This batch contains the same subject, date, and period more than once.").put("options", new JSONArray().put("skip"));
+            }
+
+            boolean hasProblems = problems.length() > 0;
+            String conflictType = conflict == null ? "" : conflict.optString("type", "");
+            boolean isSkipped = "skip".equals(decision);
+            boolean conflictResolved = conflict == null || ("existing_holiday".equals(conflictType) && "replace".equals(decision))
+                    || ("holiday_pending".equals(conflictType) && "apply".equals(decision))
+                    || ("existing_record".equals(conflictType) && "replace".equals(decision))
+                    || ("overlapping_record".equals(conflictType) && "allow".equals(decision));
+            if (!isSkipped && (hasProblems || !conflictResolved)) unresolved++;
+            boolean rowReady = !isSkipped && !hasProblems && conflictResolved;
+            if (hasProblems) invalid++; else valid++;
+            if ("duplicate_staged_row".equals(conflictType)) duplicates++;
+            if (conflict != null) conflicts++;
+            if (isSkipped) skipped++;
+            if (rowReady) ready++;
+
+            JSONObject output = new JSONObject().put("id", id).put("source", source).put("date", date).put("subjectId", subject == null ? subjectId : subject.id)
+                    .put("subjectName", subject == null ? input.optString("subjectText", "") : subject.name).put("start", start).put("end", end)
+                    .put("status", status).put("note", note).put("decision", decision).put("problems", problems)
+                    .put("invalid", hasProblems).put("ready", rowReady).put("skipped", isSkipped)
+                    .put("conflict", conflict == null ? JSONObject.NULL : conflict)
+                    .put("existingId", existingId).put("existingStatus", existingStatus).put("existingHolidayId", existingHolidayId);
+            rows.put(output);
+        }
+        return new JSONObject().put("rows", rows).put("summary", new JSONObject().put("total", items.length()).put("valid", valid).put("invalid", invalid)
+                .put("duplicates", duplicates).put("conflicts", conflicts).put("ready", ready).put("skipped", skipped).put("unresolved", unresolved));
+    }
+
+    private TimetableEntry findManualEntry(Semester semester, String subjectId, String date, String start, String end) {
+        String day = dayName(LocalDate.parse(date).getDayOfWeek().getValue() - 1);
+        for (TimetableEntry entry : db.timetable().allBySemester(semester.id)) {
+            if (!entry.subjectId.equals(subjectId) || !entry.day.equals(day) || !entry.start.equals(start) || !entry.end.equals(end)) continue;
+            if (date.compareTo(entry.effectiveFrom) < 0 || date.compareTo(entry.effectiveUntil) > 0) continue;
+            if (entry.historicalOnly && !entry.effectiveFrom.equals(date)) continue;
+            return entry;
+        }
+        return null;
     }
 
     private boolean applyOne(ClassOccurrence record, String status, String reason, boolean updateNote) {
@@ -413,7 +662,7 @@ public final class LocalAttendanceRepository {
 
     private JSONObject resetAttendance() throws Exception {
         final int[] counts = new int[2];
-        transaction(() -> { counts[0] = db.occurrences().countAll(); counts[1] = db.changes().countAll(); db.occurrences().deleteAll(); db.changes().deleteAll(); });
+        transaction(() -> { counts[0] = db.occurrences().countAll(); counts[1] = db.changes().countAll(); db.occurrences().deleteAll(); db.changes().deleteAll(); db.timetable().deleteOrphanedHistorical(); });
         return new JSONObject().put("deletedRecords", counts[0]).put("deletedChanges", counts[1]);
     }
 

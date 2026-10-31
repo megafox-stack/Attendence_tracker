@@ -232,6 +232,101 @@ public class LocalAttendanceRepositoryTest {
         assertEquals(0, database.changes().countAll());
     }
 
+    @Test public void manualAttendanceUsesSharedOccurrenceDatabaseAndStagedDraft() throws Exception {
+        LocalDate date = LocalDate.now().plusDays(2);
+        String day = dayName(date.getDayOfWeek());
+        seed(date, day);
+        String subjectId = database.subjects().bySemester(database.semesters().current().id).get(0).id;
+        JSONArray staged = new JSONArray().put(new JSONObject().put("id", "manual-row-1").put("source", "manual")
+                .put("subjectId", subjectId).put("date", date.toString()).put("start", "11:00").put("end", "12:00")
+                .put("status", "Present").put("note", "Entered manually"));
+
+        repository.execute("manual.draft.save", new JSONObject().put("items", staged));
+        assertEquals(1, new JSONArray(repository.execute("manual.draft.get", new JSONObject()).getString("value")).length());
+        JSONObject checked = repository.execute("manual.validate", new JSONObject().put("items", staged));
+        assertEquals(0, checked.getJSONObject("summary").getInt("unresolved"));
+        JSONObject committed = repository.execute("manual.commit", new JSONObject().put("items", staged));
+
+        assertEquals(1, committed.getInt("created"));
+        assertEquals(1, database.occurrences().countAll());
+        assertEquals(1, repository.execute("attendance.history", new JSONObject()).getJSONArray("records").length());
+        assertEquals(100.0, repository.execute("attendance.dashboard", new JSONObject()).getJSONObject("summary").getDouble("attendancePercent"), 0.0);
+        assertEquals(0, new JSONArray(repository.execute("manual.draft.get", new JSONObject()).getString("value")).length());
+        assertEquals(1, database.timetable().bySemester(database.semesters().current().id).size());
+    }
+
+    @Test public void duplicateManualRowsRequireExplicitSkipAndDoNotDuplicateOccurrence() throws Exception {
+        LocalDate date = LocalDate.now().plusDays(2);
+        seed(date, dayName(date.getDayOfWeek()));
+        String subjectId = database.subjects().bySemester(database.semesters().current().id).get(0).id;
+        JSONObject first = new JSONObject().put("id", "manual-a").put("source", "csv").put("subjectId", subjectId)
+                .put("date", date.toString()).put("start", "11:00").put("end", "12:00").put("status", "Present");
+        JSONObject duplicate = new JSONObject(first.toString()).put("id", "manual-b").put("source", "xlsx").put("status", "Absent");
+        JSONArray staged = new JSONArray().put(first).put(duplicate);
+        JSONObject validation = repository.execute("manual.validate", new JSONObject().put("items", staged));
+        assertEquals(1, validation.getJSONObject("summary").getInt("duplicates"));
+        assertEquals(1, validation.getJSONObject("summary").getInt("unresolved"));
+        duplicate.put("decision", "skip");
+        JSONObject result = repository.execute("manual.commit", new JSONObject().put("items", staged));
+        assertEquals(1, result.getInt("created"));
+        assertEquals(1, result.getInt("skipped"));
+        assertEquals(1, database.occurrences().countAll());
+    }
+
+    @Test public void manualConflictRequiresChoiceAndReplacementKeepsSingleRecord() throws Exception {
+        LocalDate date = LocalDate.now().plusDays(2);
+        String day = dayName(date.getDayOfWeek());
+        String entryId = seed(date, day);
+        JSONObject generated = repository.execute("attendance.generate", new JSONObject().put("date", date.toString()));
+        String occurrenceId = generated.getJSONArray("records").getJSONObject(0).getString("id");
+        repository.execute("attendance.update", new JSONObject().put("id", occurrenceId).put("status", "Absent"));
+        String subjectId = database.timetable().byId(entryId).subjectId;
+        JSONObject row = new JSONObject().put("id", "manual-conflict").put("source", "manual").put("subjectId", subjectId)
+                .put("date", date.toString()).put("start", "09:00").put("end", "10:00").put("status", "Present");
+        JSONArray staged = new JSONArray().put(row);
+        assertEquals(1, repository.execute("manual.validate", new JSONObject().put("items", staged)).getJSONObject("summary").getInt("unresolved"));
+        row.put("decision", "replace");
+        JSONObject result = repository.execute("manual.commit", new JSONObject().put("items", staged));
+        assertEquals(1, result.getInt("updated"));
+        assertEquals(1, database.occurrences().countAll());
+        assertEquals("Present", repository.execute("attendance.classes", new JSONObject().put("date", date.toString())).getJSONArray("records").getJSONObject(0).getString("status"));
+        assertEquals(0, repository.execute("attendance.generate", new JSONObject().put("date", date.toString())).getInt("created"));
+        assertEquals("Present", database.occurrences().byId(occurrenceId).status);
+    }
+
+    @Test public void invalidManualBatchRollsBackAllRowsAndKeepsDraft() throws Exception {
+        LocalDate date = LocalDate.now().plusDays(2);
+        seed(date, dayName(date.getDayOfWeek()));
+        String subjectId = database.subjects().bySemester(database.semesters().current().id).get(0).id;
+        JSONObject valid = new JSONObject().put("id", "manual-valid").put("source", "manual").put("subjectId", subjectId)
+                .put("date", date.toString()).put("start", "11:00").put("end", "12:00").put("status", "Present");
+        JSONObject invalid = new JSONObject().put("id", "manual-invalid").put("source", "csv").put("subjectId", "missing-subject")
+                .put("date", date.toString()).put("start", "12:00").put("end", "13:00").put("status", "Absent");
+        JSONArray staged = new JSONArray().put(valid).put(invalid);
+        repository.execute("manual.draft.save", new JSONObject().put("items", staged));
+        assertThrows(IllegalArgumentException.class, () -> repository.execute("manual.commit", new JSONObject().put("items", staged)));
+        assertEquals(0, database.occurrences().countAll());
+        assertEquals(2, new JSONArray(repository.execute("manual.draft.get", new JSONObject()).getString("value")).length());
+    }
+
+    @Test public void manualHolidayIsCalendarEventAndCancelsOnlyPendingOccurrences() throws Exception {
+        LocalDate date = LocalDate.now().plusDays(2);
+        String day = dayName(date.getDayOfWeek());
+        seed(date, day);
+        repository.execute("attendance.generate", new JSONObject().put("date", date.toString()));
+        JSONObject holiday = new JSONObject().put("id", "holiday-row").put("source", "manual").put("date", date.toString())
+                .put("status", "Holiday").put("note", "Campus closed");
+        JSONArray staged = new JSONArray().put(holiday);
+        JSONObject analysis = repository.execute("manual.validate", new JSONObject().put("items", staged));
+        assertEquals(1, analysis.getJSONObject("summary").getInt("unresolved"));
+        holiday.put("decision", "apply");
+        JSONObject result = repository.execute("manual.commit", new JSONObject().put("items", staged));
+        assertEquals(1, result.getInt("holidaysCreated"));
+        assertEquals(1, result.getInt("pendingCancelledByHoliday"));
+        assertEquals("CANCELLED", database.occurrences().recent().get(0).status);
+        assertEquals(1, database.holidays().bySemester(database.semesters().current().id).size());
+    }
+
     private String seed(LocalDate date, String day) throws Exception {
         LocalDate end = date.plusDays(7);
         JSONArray workingDays = new JSONArray().put(day);

@@ -49,6 +49,7 @@ public final class AttendanceDaos {
         @Query("SELECT COUNT(*) FROM class_occurrences WHERE timetableEntryId=:id") int occurrenceCount(String id);
         @Query("UPDATE timetable_entries SET effectiveFrom=:start, effectiveUntil=:end WHERE semesterId=:semesterId AND historicalOnly=0") int updateEffectiveDates(String semesterId, String start, String end);
         @Query("DELETE FROM timetable_entries WHERE semesterId=:semesterId") int deleteBySemester(String semesterId);
+        @Query("DELETE FROM timetable_entries WHERE historicalOnly=1 AND NOT EXISTS (SELECT 1 FROM class_occurrences WHERE class_occurrences.timetableEntryId=timetable_entries.id)") int deleteOrphanedHistorical();
     }
 
     @Dao public interface OccurrenceDao {
@@ -70,6 +71,7 @@ public final class AttendanceDaos {
         @Query("SELECT * FROM holidays WHERE semesterId=:semesterId ORDER BY date") List<Holiday> bySemester(String semesterId);
         @Query("SELECT * FROM holidays WHERE semesterId=:semesterId AND date=:date LIMIT 1") Holiday byDate(String semesterId, String date);
         @Insert(onConflict = OnConflictStrategy.ABORT) void insert(Holiday row);
+        @Update void update(Holiday row);
         @Query("DELETE FROM holidays WHERE id=:id") int delete(String id);
     }
 

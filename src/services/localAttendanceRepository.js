@@ -11,6 +11,7 @@ const writes = new Set([
   'timetable.create', 'timetable.update', 'timetable.active', 'timetable.delete',
   'holiday.create', 'holiday.delete', 'attendance.generate', 'attendance.update', 'attendance.delete',
   'attendance.bulk', 'attendance.submit', 'attendance.reset', 'scheduler.update', 'settings.save', 'settings.delete', 'notifications.settings.save', 'backup.restore',
+  'manual.commit',
 ]);
 
 export async function localRequest(action, payload = {}) {

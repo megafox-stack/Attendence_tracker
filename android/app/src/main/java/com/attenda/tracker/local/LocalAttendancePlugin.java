@@ -56,6 +56,12 @@ public final class LocalAttendancePlugin extends Plugin {
                 if ("scheduler.update".equals(action)) {
                     if (payload.optBoolean("enabled", false)) LocalScheduler.enable(getContext()); else LocalScheduler.disable(getContext());
                 }
+                // A daily WorkManager run can happen before the user edits today's timetable.
+                // Reconcile the current day immediately after schedule-affecting changes so new
+                // classes become Pending without requiring an off/on toggle or an app restart.
+                if (shouldReconcileScheduler(action)) {
+                    try { repository.runSchedulerTick(); } catch (Exception ignored) { /* surfaced in scheduler status */ }
+                }
                 if (affectsNotifications(action)) {
                     try { LocalNotificationScheduler.sync(getContext(), repository); } catch (Exception ignored) { /* data remains saved; next app start retries scheduling */ }
                 }
@@ -171,7 +177,14 @@ public final class LocalAttendancePlugin extends Plugin {
         return "semester.save".equals(action) || "semester.create".equals(action) || "semester.select".equals(action) || "semester.delete".equals(action)
                 || "subject.update".equals(action)
                 || "timetable.create".equals(action) || "timetable.update".equals(action) || "timetable.active".equals(action) || "timetable.delete".equals(action)
-                || "holiday.create".equals(action) || "holiday.delete".equals(action)
+                || "holiday.create".equals(action) || "holiday.delete".equals(action) || "manual.commit".equals(action)
                 || "notifications.settings.save".equals(action) || "backup.restore".equals(action);
+    }
+
+    private static boolean shouldReconcileScheduler(String action) {
+        return "semester.save".equals(action) || "semester.create".equals(action) || "semester.select".equals(action) || "semester.delete".equals(action)
+                || "subject.create".equals(action) || "subject.update".equals(action) || "subject.delete".equals(action)
+                || "timetable.create".equals(action) || "timetable.update".equals(action) || "timetable.active".equals(action) || "timetable.delete".equals(action)
+                || "holiday.create".equals(action) || "holiday.delete".equals(action) || "backup.restore".equals(action) || "manual.commit".equals(action);
     }
 }
