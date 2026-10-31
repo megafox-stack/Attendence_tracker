@@ -1,5 +1,6 @@
-import { apiRequest } from './apiClient.js';
-export const getSubjects = () => apiRequest('/subjects');
-export const createSubject = (subject) => apiRequest('/subjects', { method: 'POST', body: JSON.stringify(subject) });
-export const updateSubject = (id, subject) => apiRequest(`/subjects/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(subject) });
-export const deleteSubject = (id) => apiRequest(`/subjects/${encodeURIComponent(id)}`, { method: 'DELETE' });
+import { localRequest } from './localAttendanceRepository.js';
+
+export async function getSubjects() { return (await localRequest('subject.list')).subjects || []; }
+export async function createSubject(subject) { return (await localRequest('subject.create', subject)).subject; }
+export async function updateSubject(id, subject) { return (await localRequest('subject.update', { id, ...subject })).subject; }
+export const deleteSubject = (id) => localRequest('subject.delete', { id });

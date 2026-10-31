@@ -1,0 +1,49 @@
+import { registerPlugin, Capacitor } from '@capacitor/core';
+
+const LocalAttendance = registerPlugin('LocalAttendance');
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') globalThis.dispatchEvent?.(new Event('attenda:session-change'));
+  });
+}
+const writes = new Set([
+  'semester.save', 'semester.create', 'semester.select', 'semester.delete', 'subject.create', 'subject.update', 'subject.delete',
+  'timetable.create', 'timetable.update', 'timetable.active', 'timetable.delete',
+  'holiday.create', 'holiday.delete', 'attendance.generate', 'attendance.update', 'attendance.delete',
+  'attendance.bulk', 'attendance.submit', 'attendance.reset', 'scheduler.update', 'settings.save', 'settings.delete', 'notifications.settings.save', 'backup.restore',
+  'manual.commit',
+]);
+
+export async function localRequest(action, payload = {}) {
+  if (!Capacitor.isNativePlatform()) {
+    const error = new Error('Local Room storage is available in the installed Android app.');
+    error.code = 'native_storage_unavailable';
+    throw error;
+  }
+  try {
+    const result = await LocalAttendance.request({ action, payload });
+    if (writes.has(action)) globalThis.dispatchEvent?.(new Event('attenda:session-change'));
+    return result;
+  } catch (error) {
+    const wrapped = new Error(error?.message || 'Could not access local attendance data.');
+    wrapped.code = error?.code || 'local_database_error';
+    throw wrapped;
+  }
+}
+
+export async function getNativeNotificationPermission() {
+  if (!Capacitor.isNativePlatform()) return { granted: false };
+  return LocalAttendance.getNotificationPermission();
+}
+
+export async function requestNativeNotificationPermission() {
+  if (!Capacitor.isNativePlatform()) return { granted: false };
+  return LocalAttendance.requestNotificationPermission();
+}
+
+export async function openNativeNotificationSettings() {
+  if (!Capacitor.isNativePlatform()) throw new Error('Notification settings are available in the installed Android app.');
+  return LocalAttendance.openNotificationSettings();
+}
+
+export function hasLocalDatabase() { return Capacitor.isNativePlatform(); }
