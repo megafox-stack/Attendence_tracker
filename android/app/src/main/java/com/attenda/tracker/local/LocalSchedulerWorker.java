@@ -8,7 +8,14 @@ import androidx.work.WorkerParameters;
 public final class LocalSchedulerWorker extends Worker {
     public LocalSchedulerWorker(@NonNull Context context, @NonNull WorkerParameters params) { super(context, params); }
     @NonNull @Override public Result doWork() {
-        try { new LocalAttendanceRepository(getApplicationContext()).runSchedulerTick(); return Result.success(); }
+        try {
+            LocalAttendanceRepository repository = new LocalAttendanceRepository(getApplicationContext());
+            repository.runSchedulerTick();
+            if (LocalScheduler.isClassEndCheck(getInputData())) {
+                LocalScheduler.scheduleFollowingClassEndCheck(getApplicationContext(), repository);
+            }
+            return Result.success();
+        }
         catch (IllegalArgumentException error) { return Result.failure(); }
         catch (Exception error) { return Result.retry(); }
     }

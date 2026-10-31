@@ -41,7 +41,10 @@ public final class LocalAttendancePlugin extends Plugin {
         repository = new LocalAttendanceRepository(getContext());
         LocalScheduler.ensurePeriodic(getContext());
         databaseExecutor.execute(() -> {
-            try { repository.runSchedulerTick(); } catch (Exception ignored) { /* surfaced through scheduler status */ }
+            try {
+                repository.runSchedulerTick();
+                LocalScheduler.refreshClassEndCheck(getContext(), repository);
+            } catch (Exception ignored) { /* surfaced through scheduler status */ }
             try { LocalNotificationScheduler.sync(getContext(), repository); } catch (Exception ignored) { /* retried on next app start or schedule change */ }
         });
     }
@@ -60,7 +63,10 @@ public final class LocalAttendancePlugin extends Plugin {
                 // Reconcile the current day immediately after schedule-affecting changes so new
                 // classes become Pending without requiring an off/on toggle or an app restart.
                 if (shouldReconcileScheduler(action)) {
-                    try { repository.runSchedulerTick(); } catch (Exception ignored) { /* surfaced in scheduler status */ }
+                    try {
+                        repository.runSchedulerTick();
+                        LocalScheduler.refreshClassEndCheck(getContext(), repository);
+                    } catch (Exception ignored) { /* surfaced in scheduler status */ }
                 }
                 if (affectsNotifications(action)) {
                     try { LocalNotificationScheduler.sync(getContext(), repository); } catch (Exception ignored) { /* data remains saved; next app start retries scheduling */ }
@@ -182,7 +188,8 @@ public final class LocalAttendancePlugin extends Plugin {
     }
 
     private static boolean shouldReconcileScheduler(String action) {
-        return "semester.save".equals(action) || "semester.create".equals(action) || "semester.select".equals(action) || "semester.delete".equals(action)
+        return "scheduler.update".equals(action)
+                || "semester.save".equals(action) || "semester.create".equals(action) || "semester.select".equals(action) || "semester.delete".equals(action)
                 || "subject.create".equals(action) || "subject.update".equals(action) || "subject.delete".equals(action)
                 || "timetable.create".equals(action) || "timetable.update".equals(action) || "timetable.active".equals(action) || "timetable.delete".equals(action)
                 || "holiday.create".equals(action) || "holiday.delete".equals(action) || "backup.restore".equals(action) || "manual.commit".equals(action);

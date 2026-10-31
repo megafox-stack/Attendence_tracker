@@ -13,6 +13,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -287,6 +288,10 @@ public final class LocalAttendanceRepository {
     }
 
     private JSONObject generate(String date) throws Exception {
+        return generateAt(date, Instant.now());
+    }
+
+    JSONObject generateAt(String date, Instant generationTime) throws Exception {
         validDate(date, "class date"); Semester s = requireCurrentSemester();
         if (date.compareTo(s.startDate) < 0 || date.compareTo(s.endDate) > 0) throw new IllegalArgumentException("The selected date is outside the current semester.");
         String today = LocalDate.now(ZoneId.of(s.timeZone)).toString();
@@ -294,11 +299,13 @@ public final class LocalAttendanceRepository {
         int weekday = LocalDate.parse(date).getDayOfWeek().getValue();
         if ((s.workingDaysMask & (1 << (weekday - 1))) == 0) throw new IllegalArgumentException("The selected date is not a configured working day.");
         if (db.holidays().byDate(s.id, date) != null) return new JSONObject().put("date", date).put("created", 0).put("skipped", "holiday").put("records", occurrencesJson(db.occurrences().byDate(date)));
-        final int[] inserted = {0}; final long now = System.currentTimeMillis();
+        final int[] inserted = {0}; final long now = generationTime.toEpochMilli();
         transaction(() -> {
             for (TimetableEntry entry : db.timetable().bySemester(s.id)) {
                 if (!entry.active || !entry.day.equals(dayName(weekday - 1)) || date.compareTo(entry.effectiveFrom) < 0 || date.compareTo(entry.effectiveUntil) > 0) continue;
                 Subject subject = db.subjects().byId(entry.subjectId); if (subject == null || !subject.active) continue;
+                Instant classEnd = LocalDate.parse(date).atTime(LocalTime.parse(entry.end)).atZone(ZoneId.of(s.timeZone)).toInstant();
+                if (classEnd.isAfter(generationTime)) continue;
                 ClassOccurrence occurrence = new ClassOccurrence(); occurrence.id = uuid(); occurrence.semesterId = s.id; occurrence.timetableEntryId = entry.id;
                 occurrence.subjectId = subject.id; occurrence.classDate = date; occurrence.start = entry.start; occurrence.end = entry.end;
                 occurrence.subjectNameSnapshot = subject.name; occurrence.subjectCodeSnapshot = subject.code; occurrence.roomSnapshot = entry.room;
@@ -307,6 +314,34 @@ public final class LocalAttendanceRepository {
             }
         });
         return new JSONObject().put("date", date).put("created", inserted[0]).put("skipped", JSONObject.NULL).put("records", occurrencesJson(db.occurrences().byDate(date)));
+    }
+
+    /** Returns the next future class end that needs a scheduler check, or -1 when none is configured. */
+    public long nextSchedulerClassEndMillis() throws Exception {
+        if (!"true".equalsIgnoreCase(db.settings().get("schedulerEnabled"))) return -1L;
+        Semester semester = db.semesters().current();
+        if (semester == null) return -1L;
+        ZoneId zone = ZoneId.of(semester.timeZone);
+        LocalDate today = LocalDate.now(zone);
+        LocalDate semesterStart = LocalDate.parse(semester.startDate);
+        LocalDate semesterEnd = LocalDate.parse(semester.endDate);
+        LocalDate date = today.isBefore(semesterStart) ? semesterStart : today;
+        Instant now = Instant.now();
+        long earliest = Long.MAX_VALUE;
+        List<TimetableEntry> entries = db.timetable().bySemester(semester.id);
+        for (; !date.isAfter(semesterEnd); date = date.plusDays(1)) {
+            int weekday = date.getDayOfWeek().getValue();
+            if ((semester.workingDaysMask & (1 << (weekday - 1))) == 0 || db.holidays().byDate(semester.id, date.toString()) != null) continue;
+            for (TimetableEntry entry : entries) {
+                if (!entry.active || entry.historicalOnly || !entry.day.equals(dayName(weekday - 1))
+                        || date.toString().compareTo(entry.effectiveFrom) < 0 || date.toString().compareTo(entry.effectiveUntil) > 0
+                        || db.subjects().byId(entry.subjectId) == null || !db.subjects().byId(entry.subjectId).active
+                        || db.occurrences().byEntryDate(entry.id, date.toString()) != null) continue;
+                long classEnd = date.atTime(LocalTime.parse(entry.end)).atZone(zone).toInstant().toEpochMilli();
+                if (classEnd > now.toEpochMilli() && classEnd < earliest) earliest = classEnd;
+            }
+        }
+        return earliest == Long.MAX_VALUE ? -1L : earliest;
     }
 
     private JSONObject updateOccurrence(String id, JSONObject p) throws Exception {

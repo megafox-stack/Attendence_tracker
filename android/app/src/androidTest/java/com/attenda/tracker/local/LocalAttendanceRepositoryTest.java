@@ -9,7 +9,9 @@ import androidx.room.Room;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import java.time.DayOfWeek;
+import java.time.Instant;
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Arrays;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -37,14 +39,41 @@ public class LocalAttendanceRepositoryTest {
         String day = dayName(date.getDayOfWeek());
         seed(date, day);
 
-        JSONObject first = repository.execute("attendance.generate", new JSONObject().put("date", date.toString()));
+        JSONObject first = generateAfterClass(date);
         assertEquals(1, first.getInt("created"));
         String id = first.getJSONArray("records").getJSONObject(0).getString("id");
         repository.execute("attendance.update", new JSONObject().put("id", id).put("status", "Present"));
 
-        JSONObject again = repository.execute("attendance.generate", new JSONObject().put("date", date.toString()));
+        JSONObject again = generateAfterClass(date);
         assertEquals(0, again.getInt("created"));
         assertEquals("Present", again.getJSONArray("records").getJSONObject(0).getString("status"));
+    }
+
+    @Test public void classOccurrenceIsNotGeneratedUntilItsScheduledEnd() throws Exception {
+        LocalDate date = LocalDate.now(ZoneId.of("UTC")).plusDays(1);
+        seed(date, dayName(date.getDayOfWeek()));
+
+        JSONObject beforeEnd = repository.generateAt(date.toString(), date.atTime(9, 59).atZone(ZoneId.of("UTC")).toInstant());
+        assertEquals(0, beforeEnd.getInt("created"));
+        assertEquals(0, beforeEnd.getJSONArray("records").length());
+
+        JSONObject afterEnd = repository.generateAt(date.toString(), date.atTime(10, 1).atZone(ZoneId.of("UTC")).toInstant());
+        assertEquals(1, afterEnd.getInt("created"));
+        String id = afterEnd.getJSONArray("records").getJSONObject(0).getString("id");
+        repository.execute("attendance.update", new JSONObject().put("id", id).put("status", "Present"));
+
+        JSONObject repeated = repository.generateAt(date.toString(), date.atTime(11, 0).atZone(ZoneId.of("UTC")).toInstant());
+        assertEquals(0, repeated.getInt("created"));
+        assertEquals("Present", repeated.getJSONArray("records").getJSONObject(0).getString("status"));
+    }
+
+    @Test public void nextSchedulerCheckUsesTheClassEndTime() throws Exception {
+        LocalDate date = LocalDate.now(ZoneId.of("UTC")).plusDays(1);
+        seed(date, dayName(date.getDayOfWeek()));
+        repository.execute("scheduler.update", new JSONObject().put("enabled", true));
+
+        long expected = date.atTime(10, 0).atZone(ZoneId.of("UTC")).toInstant().toEpochMilli();
+        assertEquals(expected, repository.nextSchedulerClassEndMillis());
     }
 
     @Test public void sameSubjectAtTwoTimesOnSameDayGetsSeparateOccurrences() throws Exception {
@@ -54,7 +83,7 @@ public class LocalAttendanceRepositoryTest {
         String subjectId = database.subjects().bySemester(database.semesters().current().id).get(0).id;
         repository.execute("timetable.create", new JSONObject().put("subjectId", subjectId).put("day", day).put("start", "11:00").put("end", "12:00"));
 
-        JSONObject result = repository.execute("attendance.generate", new JSONObject().put("date", date.toString()));
+        JSONObject result = generateAfterClass(date);
         assertEquals(2, result.getInt("created"));
         assertEquals(2, result.getJSONArray("records").length());
     }
@@ -63,7 +92,7 @@ public class LocalAttendanceRepositoryTest {
         LocalDate date = LocalDate.now().plusDays(2);
         String day = dayName(date.getDayOfWeek());
         String entryId = seed(date, day);
-        repository.execute("attendance.generate", new JSONObject().put("date", date.toString()));
+        generateAfterClass(date);
         JSONObject result = repository.execute("holiday.create", new JSONObject().put("date", date.toString()).put("reason", "Campus closed"));
         assertEquals(1, result.getInt("pendingRecordsCancelled"));
         assertEquals("Cancelled", repository.execute("attendance.classes", new JSONObject().put("date", date.toString())).getJSONArray("records").getJSONObject(0).getString("status"));
@@ -84,7 +113,7 @@ public class LocalAttendanceRepositoryTest {
         LocalDate date = LocalDate.now().plusDays(1);
         String day = dayName(date.getDayOfWeek());
         seed(date, day);
-        JSONObject generated = repository.execute("attendance.generate", new JSONObject().put("date", date.toString()));
+        JSONObject generated = generateAfterClass(date);
         String id = generated.getJSONArray("records").getJSONObject(0).getString("id");
         repository.execute("attendance.update", new JSONObject().put("id", id).put("status", "Absent").put("reason", "User correction"));
         JSONObject backup = repository.execute("backup.snapshot", new JSONObject());
@@ -114,7 +143,7 @@ public class LocalAttendanceRepositoryTest {
     @Test public void percentageUsesOnlyPresentAndAbsent() throws Exception {
         LocalDate date = LocalDate.now().plusDays(1);
         seed(date, dayName(date.getDayOfWeek()));
-        JSONObject generation = repository.execute("attendance.generate", new JSONObject().put("date", date.toString()));
+        JSONObject generation = generateAfterClass(date);
         String id = generation.getJSONArray("records").getJSONObject(0).getString("id");
         repository.execute("attendance.update", new JSONObject().put("id", id).put("status", "Present"));
         JSONObject dashboard = repository.execute("attendance.dashboard", new JSONObject());
@@ -154,7 +183,7 @@ public class LocalAttendanceRepositoryTest {
         seed(today, day);
         String subjectId = database.subjects().bySemester(database.semesters().current().id).get(0).id;
         repository.execute("subject.update", new JSONObject().put("id", subjectId).put("name", "Entered subject").put("code", "SUB-1").put("attendanceTargetPercent", 80));
-        JSONObject generated = repository.execute("attendance.generate", new JSONObject().put("date", today.toString()));
+        JSONObject generated = generateAfterClass(today);
         String occurrenceId = generated.getJSONArray("records").getJSONObject(0).getString("id");
         repository.execute("attendance.update", new JSONObject().put("id", occurrenceId).put("status", "Absent"));
 
@@ -212,7 +241,7 @@ public class LocalAttendanceRepositoryTest {
         String day = dayName(start.getDayOfWeek());
         String entryId = seed(start, day);
         String firstId = database.semesters().current().id;
-        repository.execute("attendance.generate", new JSONObject().put("date", start.toString()));
+        generateAfterClass(start);
         LocalDate nextStart = start.plusDays(40);
         String secondId = repository.execute("semester.create", new JSONObject()
                 .put("name", "Second term")
@@ -277,7 +306,7 @@ public class LocalAttendanceRepositoryTest {
         LocalDate date = LocalDate.now().plusDays(2);
         String day = dayName(date.getDayOfWeek());
         String entryId = seed(date, day);
-        JSONObject generated = repository.execute("attendance.generate", new JSONObject().put("date", date.toString()));
+        JSONObject generated = generateAfterClass(date);
         String occurrenceId = generated.getJSONArray("records").getJSONObject(0).getString("id");
         repository.execute("attendance.update", new JSONObject().put("id", occurrenceId).put("status", "Absent"));
         String subjectId = database.timetable().byId(entryId).subjectId;
@@ -290,7 +319,7 @@ public class LocalAttendanceRepositoryTest {
         assertEquals(1, result.getInt("updated"));
         assertEquals(1, database.occurrences().countAll());
         assertEquals("Present", repository.execute("attendance.classes", new JSONObject().put("date", date.toString())).getJSONArray("records").getJSONObject(0).getString("status"));
-        assertEquals(0, repository.execute("attendance.generate", new JSONObject().put("date", date.toString())).getInt("created"));
+        assertEquals(0, generateAfterClass(date).getInt("created"));
         assertEquals("Present", database.occurrences().byId(occurrenceId).status);
     }
 
@@ -313,7 +342,7 @@ public class LocalAttendanceRepositoryTest {
         LocalDate date = LocalDate.now().plusDays(2);
         String day = dayName(date.getDayOfWeek());
         seed(date, day);
-        repository.execute("attendance.generate", new JSONObject().put("date", date.toString()));
+        generateAfterClass(date);
         JSONObject holiday = new JSONObject().put("id", "holiday-row").put("source", "manual").put("date", date.toString())
                 .put("status", "Holiday").put("note", "Campus closed");
         JSONArray staged = new JSONArray().put(holiday);
@@ -335,6 +364,11 @@ public class LocalAttendanceRepositoryTest {
         String subjectId = subject.getJSONObject("subject").getString("id");
         JSONObject entry = repository.execute("timetable.create", new JSONObject().put("subjectId", subjectId).put("day", day).put("start", "09:00").put("end", "10:00").put("room", "Room 1"));
         return entry.getJSONObject("entry").getString("id");
+    }
+
+    private JSONObject generateAfterClass(LocalDate date) throws Exception {
+        Instant afterClass = date.atTime(13, 0).atZone(ZoneId.of("UTC")).toInstant();
+        return repository.generateAt(date.toString(), afterClass);
     }
 
     private static String dayName(DayOfWeek day) {
