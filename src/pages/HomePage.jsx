@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowDownToLine, ArrowRight, Bell, CalendarDays, ChevronRight, CircleHelp, Clock3, Gauge, ListChecks, Settings2, TrendingUp, Trash2, Upload } from 'lucide-react';
+import { ArrowDownToLine, ArrowRight, Bell, Bug, CalendarDays, ChevronRight, CircleHelp, Clock3, Gauge, ListChecks, Settings2, ShieldCheck, TrendingUp, Trash2, Upload } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { EmptyState, Overlay, PageHeading, SectionTitle } from '../App.jsx';
 import StatusBadge from '../components/StatusBadge.jsx';
@@ -12,7 +12,7 @@ function Metric({ icon: Icon, label, value, accent = '' }) {
   return <div className="overview-metric"><span className={`metric-icon ${accent}`}><Icon size={16} /></span><span className="metric-text"><small>{label}</small><strong>{value}</strong></span></div>;
 }
 
-export default function HomePage() {
+export default function HomePage({ settingsOpen = false, onSettingsClose = () => {} }) {
   const [dashboard, setDashboard] = useState(null);
   const [scheduler, setScheduler] = useState(null);
   const [state, setState] = useState('loading');
@@ -80,7 +80,7 @@ export default function HomePage() {
     finally { setBackupBusy(false); }
   }
 
-  return <><PageHeading eyebrow="YOUR OVERVIEW" title="Welcome" description="Stay consistent. Your attendance builds your future." action={state === 'ready' ? <div className="home-header-actions"><button type="button" className="button button-secondary button-small" disabled={backupBusy} onClick={exportBackup}><ArrowDownToLine size={14} />Export backup</button><button type="button" className="button button-secondary button-small" disabled={backupBusy} onClick={importBackup}><Upload size={14} />Restore backup</button><button type="button" className="button button-secondary button-small" disabled={!hasRecords || backupBusy} onClick={() => { setResetError(''); setResetMessage(''); setResetPhrase(''); setResetOpen(true); }}><Trash2 size={14} />Reset attendance</button></div> : undefined} />
+  return <><PageHeading eyebrow="YOUR OVERVIEW" title="Welcome" description="Stay consistent. Your attendance builds your future." />
     {resetMessage && <div className="inline-feedback" role="status">{resetMessage}<button type="button" aria-label="Dismiss message" onClick={() => setResetMessage('')}>×</button></div>}
     {backupError && <div className="inline-feedback" role="alert">{backupError}<button type="button" aria-label="Dismiss message" onClick={() => setBackupError('')}>×</button></div>}
     {state === 'error' && <div className="inline-feedback" role="alert">{error}<button type="button" onClick={load}>Retry</button></div>}
@@ -96,6 +96,25 @@ export default function HomePage() {
         {state === 'ready' && todaysRecords.length > 0 && <div className="home-class-list">{todaysRecords.map((record) => <Link className="home-class-row" to="/review" key={record.id}><span className="home-class-icon"><CalendarDays size={15} /></span><span className="home-class-copy"><strong>{record.subject}</strong><small>{record.code} · {record.start}–{record.end}{record.room ? ` · ${record.room}` : ''}</small></span><StatusBadge status={record.status} /><ChevronRight size={14} /></Link>)}</div>}
       </section></div>
     <section className="card next-card"><div className="next-icon"><Clock3 size={18} /></div><div className="next-copy"><span className="card-kicker">UP NEXT</span><h2>{nextClass ? nextClass.subject : 'No upcoming class record'}</h2><p>{nextClass ? `${nextClass.start}–${nextClass.end} · ${nextClass.code}${nextClass.room ? ` · ${nextClass.room}` : ''}` : 'Next class appears here after a scheduler-generated record exists for today.'}</p></div><Link className="next-action" to={nextClass ? '/review' : '/timetable'}>{nextClass ? 'Review today' : 'View timetable'} <ChevronRight size={15} /></Link></section>
+    {settingsOpen && <Overlay title="Settings" onClose={onSettingsClose} footer={<button type="button" className="button button-secondary" onClick={onSettingsClose}>Done</button>}>
+      <p className="settings-modal-intro">Manage local data and backups for this device.</p>
+      <div className="settings-action-list">
+        <button type="button" className="settings-action" disabled={state !== 'ready' || backupBusy} onClick={exportBackup}><span className="settings-action-icon"><ArrowDownToLine size={17} /></span><span><strong>Export backup</strong><small>Save a copy of your local attendance data.</small></span></button>
+        <button type="button" className="settings-action" disabled={state !== 'ready' || backupBusy} onClick={importBackup}><span className="settings-action-icon"><Upload size={17} /></span><span><strong>Restore backup</strong><small>Restore data from a saved backup file.</small></span></button>
+        <button type="button" className="settings-action settings-action-danger" disabled={state !== 'ready' || !hasRecords || backupBusy} onClick={() => { setResetError(''); setResetMessage(''); setResetPhrase(''); setResetOpen(true); }}><span className="settings-action-icon"><Trash2 size={17} /></span><span><strong>Reset attendance</strong><small>Remove attendance records and correction history.</small></span></button>
+      </div>
+      <section className="settings-about" aria-labelledby="settings-about-title">
+        <div className="settings-about-heading"><h3 id="settings-about-title">About</h3><span>Version 1.0</span></div>
+        <details className="settings-about-detail"><summary>Release notes</summary><p>Local attendance storage, semester timetables, after-class Pending records, attendance reminders, manual attendance entry, CSV/XLSX import, and device backups.</p></details>
+        <details className="settings-about-detail"><summary>Developer information</summary><p>Developer and release publisher: Archit Naik.</p></details>
+        <details className="settings-about-detail"><summary><ShieldCheck size={13} />Privacy policy</summary><p>Attendance data is stored on this device. This app does not connect to a backend. Imported spreadsheets are read on-device. Backups are saved only when you choose a location. Notifications are scheduled locally. Keep a backup before removing the app.</p></details>
+        <a className="settings-about-report" href="mailto:?subject=Attendance%20Tracker%20bug%20report&body=App%20version%3A%201.0%0A%0ADescribe%20the%20problem%20and%20steps%20to%20reproduce%3A%0A"><Bug size={14} /><span>Report a bug</span><small>Opens your email app</small></a>
+      </section>
+      {state !== 'ready' && <p className="settings-modal-status" role="status">{state === 'loading' ? 'Loading local data…' : state === 'signed-out' ? 'Open the installed app and set up local data to use these actions.' : error || 'Local data is unavailable.'}</p>}
+      {resetMessage && <p className="settings-modal-status" role="status">{resetMessage}</p>}
+      {backupError && <p className="settings-modal-status settings-modal-error" role="alert">{backupError}</p>}
+      {backupBusy && <p className="settings-modal-status" role="status">Working…</p>}
+    </Overlay>}
     {resetOpen && <Overlay title="Reset all attendance records?" onClose={() => { if (!resetBusy) { setResetOpen(false); setResetPhrase(''); } }} footer={<><button type="button" className="button button-secondary" disabled={resetBusy} onClick={() => { setResetOpen(false); setResetPhrase(''); }}>Cancel</button><button type="button" className="button button-danger" disabled={resetBusy || resetPhrase.trim().toUpperCase() !== 'RESET'} onClick={confirmReset}>{resetBusy ? 'Resetting…' : <><Trash2 size={14} />Delete all records</>}</button></>}><p className="dialog-copy">This permanently removes all <strong>{summary?.total ?? 0}</strong> saved Pending, Present, Absent, and Cancelled attendance records and their correction history on this device.</p><p className="dialog-copy">Your semester, subjects, timetable, holidays, and scheduler setting on this device will be kept. If the scheduler is enabled, it may generate today’s scheduled class records again on its next check.</p><label className="field"><span>Type RESET to confirm <em>*</em></span><input type="text" value={resetPhrase} onChange={(event) => setResetPhrase(event.target.value)} autoComplete="off" autoCapitalize="characters" disabled={resetBusy} /></label>{resetError && <p className="form-error" role="alert">{resetError}</p>}</Overlay>}
   </>;
 }

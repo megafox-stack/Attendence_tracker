@@ -1,7 +1,7 @@
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { Capacitor } from '@capacitor/core';
-import { Bell, CalendarDays, Check, CircleHelp, Home, ListChecks, ClipboardCheck, Sparkles, X } from 'lucide-react';
+import { Bell, CalendarDays, Check, CircleHelp, Home, ListChecks, ClipboardCheck, Settings, Sparkles, X } from 'lucide-react';
 import HomePage from './pages/HomePage.jsx';
 import AttendancePage from './pages/AttendancePage.jsx';
 import TimetablePage from './pages/TimetablePage.jsx';
@@ -42,6 +42,7 @@ function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
   const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
+  const [appSettingsOpen, setAppSettingsOpen] = useState(false);
   useEffect(() => {
     const openNotificationRoute = (event) => {
       const path = event.detail?.path;
@@ -51,8 +52,8 @@ function AppShell() {
     return () => globalThis.removeEventListener('attenda:notification-open', openNotificationRoute);
   }, [navigate]);
   return <div className="app-shell"><div className="ambient ambient-one" /><div className="ambient ambient-two" />
-    <header className="topbar"><NavLink to="/" className="brand"><span className="brand-mark"><CalendarDays size={18} /></span><span><strong>Attendance Tracker</strong><small>ATTENDANCE TRACKER</small></span></NavLink><div className="topbar-right"><span className="connection-pill connection-ready" title={Capacitor.isNativePlatform() ? 'Data is saved on this device' : 'Open the installed Android app to use local storage'}><span className="connection-dot" />{Capacitor.isNativePlatform() ? 'On this device' : 'Android app required'}</span><button type="button" className="icon-button notification-button" aria-label="Notification settings" title="Notification settings" onClick={() => setNotificationSettingsOpen(true)}><Bell size={18} /></button></div></header>
-    <div className="body-layout"><main className="main-area"><div className="content-width"><Routes><Route path="/" element={<HomePage />} /><Route path="/attendance" element={<AttendancePage />} /><Route path="/timetable" element={<TimetablePage />} /><Route path="/review" element={<DailyReviewPage />} /><Route path="/insights" element={<ManualAttendancePage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes><footer className="page-footer">Attendance data is stored on this device and is available offline.</footer></div></main></div>
+    <header className="topbar"><NavLink to="/" className="brand"><span className="brand-mark"><CalendarDays size={18} /></span><span><strong>Attendance Tracker</strong><small>ATTENDANCE TRACKER</small></span></NavLink><div className="topbar-right"><span className="connection-pill connection-ready" title={Capacitor.isNativePlatform() ? 'Data is saved on this device' : 'Open the installed Android app to use local storage'}><span className="connection-dot" />{Capacitor.isNativePlatform() ? 'On this device' : 'Android app required'}</span><button type="button" className="icon-button notification-button" aria-label="Notification settings" title="Notification settings" onClick={() => setNotificationSettingsOpen(true)}><Bell size={18} /></button><button type="button" className="icon-button app-settings-button" aria-label="App settings" title="App settings" onClick={() => { setAppSettingsOpen(true); if (location.pathname !== '/') navigate('/'); }}><Settings size={18} /></button></div></header>
+    <div className="body-layout"><main className="main-area"><div className="content-width"><Routes><Route path="/" element={<HomePage settingsOpen={appSettingsOpen} onSettingsClose={() => setAppSettingsOpen(false)} />} /><Route path="/attendance" element={<AttendancePage />} /><Route path="/timetable" element={<TimetablePage />} /><Route path="/review" element={<DailyReviewPage />} /><Route path="/insights" element={<ManualAttendancePage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes><footer className="page-footer">Attendance data is stored on this device and is available offline.</footer></div></main></div>
     <nav className="bottom-nav" aria-label="Main navigation">{navItems.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end={to === '/'} aria-label={label} className={({ isActive }) => `bottom-link${isActive || (to === '/attendance' && location.pathname === '/review') ? ' active' : ''}`}><Icon size={19} /><span>{label}</span></NavLink>)}</nav>
     {notificationSettingsOpen && <NotificationSettingsModal onClose={() => setNotificationSettingsOpen(false)} />}
   </div>;
