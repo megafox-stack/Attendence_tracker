@@ -8,6 +8,9 @@ import android.os.Build;
 import android.provider.Settings;
 import androidx.core.app.NotificationManagerCompat;
 import androidx.core.content.ContextCompat;
+import androidx.biometric.BiometricManager;
+import androidx.biometric.BiometricPrompt;
+import androidx.fragment.app.FragmentActivity;
 import androidx.activity.result.ActivityResult;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -23,6 +26,12 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
+import java.util.Arrays;
+import android.util.Base64;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONObject;
@@ -110,6 +119,111 @@ public final class LocalAttendancePlugin extends Plugin {
             getContext().startActivity(intent);
             call.resolve(new JSObject().put("opened", true));
         } catch (Exception error) { call.reject("Could not open notification settings.", "notification_settings_error", error); }
+    }
+
+    @PluginMethod public void getAppLockState(PluginCall call) {
+        android.content.SharedPreferences prefs = lockPreferences();
+        boolean biometricAvailable = BiometricManager.from(getContext()).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK) == BiometricManager.BIOMETRIC_SUCCESS;
+        boolean biometricEnabled = prefs.getBoolean("biometricEnabled", false);
+        boolean pinEnabled = prefs.getBoolean("pinEnabled", false);
+        call.resolve(new JSObject().put("supported", true).put("enabled", prefs.getBoolean("lockEnabled", false))
+                .put("biometricEnabled", biometricEnabled).put("pinEnabled", pinEnabled)
+                .put("biometricAvailable", biometricAvailable).put("hasPin", prefs.contains("pinHash") && prefs.contains("pinSalt")));
+    }
+
+    @PluginMethod public void updateAppLock(PluginCall call) {
+        boolean enabled = call.getBoolean("enabled", false);
+        boolean biometricEnabled = call.getBoolean("biometricEnabled", false);
+        boolean pinEnabled = call.getBoolean("pinEnabled", false);
+        android.content.SharedPreferences prefs = lockPreferences();
+        if (enabled && !biometricEnabled && !pinEnabled) { call.reject("Choose fingerprint/face or set a PIN before turning on App Lock.", "app_lock_method_required"); return; }
+        if (pinEnabled && !(prefs.contains("pinHash") && prefs.contains("pinSalt"))) { call.reject("Set up a PIN before enabling PIN unlock.", "app_lock_pin_required"); return; }
+        if (biometricEnabled && BiometricManager.from(getContext()).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK) != BiometricManager.BIOMETRIC_SUCCESS) {
+            call.reject("No enrolled fingerprint or face unlock is available on this device.", "biometric_unavailable"); return;
+        }
+        prefs.edit().putBoolean("lockEnabled", enabled).putBoolean("biometricEnabled", biometricEnabled).putBoolean("pinEnabled", pinEnabled).apply();
+        call.resolve(new JSObject().put("enabled", enabled).put("biometricEnabled", biometricEnabled).put("pinEnabled", pinEnabled));
+    }
+
+    @PluginMethod public void setAppLockPin(PluginCall call) {
+        String pin = call.getString("pin");
+        String confirmation = call.getString("confirmation");
+        if (pin == null || !pin.matches("[0-9]{4,8}")) { call.reject("PIN must contain 4 to 8 digits.", "invalid_pin"); return; }
+        if (!pin.equals(confirmation)) { call.reject("The PIN entries do not match.", "pin_mismatch"); return; }
+        databaseExecutor.execute(() -> {
+            char[] chars = pin.toCharArray();
+            try {
+                byte[] salt = new byte[16]; new SecureRandom().nextBytes(salt);
+                byte[] hash = derivePin(chars, salt);
+                lockPreferences().edit().putString("pinSalt", Base64.encodeToString(salt, Base64.NO_WRAP))
+                        .putString("pinHash", Base64.encodeToString(hash, Base64.NO_WRAP)).putBoolean("pinEnabled", true).apply();
+                call.resolve(new JSObject().put("enabled", true).put("pinEnabled", true));
+                Arrays.fill(hash, (byte) 0);
+            } catch (Exception error) { call.reject("Could not securely save the PIN.", "pin_storage_error", error); }
+            finally { Arrays.fill(chars, '\0'); }
+        });
+    }
+
+    @PluginMethod public void verifyAppLockPin(PluginCall call) {
+        String pin = call.getString("pin");
+        if (pin == null || !pin.matches("[0-9]{4,8}")) { call.reject("Enter your 4 to 8 digit PIN.", "invalid_pin"); return; }
+        databaseExecutor.execute(() -> {
+            char[] chars = pin.toCharArray();
+            try {
+                android.content.SharedPreferences prefs = lockPreferences();
+                if (!prefs.getBoolean("pinEnabled", false)) { call.reject("PIN unlock is not enabled.", "pin_disabled"); return; }
+                long lockUntil = prefs.getLong("pinLockUntil", 0L);
+                if (System.currentTimeMillis() < lockUntil) {
+                    long seconds = Math.max(1L, (lockUntil - System.currentTimeMillis() + 999L) / 1000L);
+                    call.reject("Too many incorrect attempts. Try again in " + seconds + " seconds.", "pin_temporarily_locked"); return;
+                }
+                byte[] salt = Base64.decode(prefs.getString("pinSalt", ""), Base64.NO_WRAP);
+                byte[] expected = Base64.decode(prefs.getString("pinHash", ""), Base64.NO_WRAP);
+                byte[] actual = derivePin(chars, salt);
+                boolean matches = MessageDigest.isEqual(expected, actual);
+                Arrays.fill(actual, (byte) 0);
+                if (matches) {
+                    prefs.edit().remove("pinFailureCount").remove("pinLockUntil").apply();
+                    call.resolve(new JSObject().put("unlocked", true));
+                } else {
+                    int failures = prefs.getInt("pinFailureCount", 0) + 1;
+                    if (failures >= 5) prefs.edit().putInt("pinFailureCount", 0).putLong("pinLockUntil", System.currentTimeMillis() + 30_000L).apply();
+                    else prefs.edit().putInt("pinFailureCount", failures).apply();
+                    call.reject(failures >= 5 ? "Too many incorrect attempts. Try again in 30 seconds." : "Incorrect PIN. Try again.", "incorrect_pin");
+                }
+            } catch (Exception error) { call.reject("Could not verify the PIN.", "pin_verification_error", error); }
+            finally { Arrays.fill(chars, '\0'); }
+        });
+    }
+
+    @PluginMethod public void authenticateAppLock(PluginCall call) {
+        android.content.SharedPreferences prefs = lockPreferences();
+        if (!prefs.getBoolean("lockEnabled", false) || !prefs.getBoolean("biometricEnabled", false)) { call.reject("Biometric unlock is not enabled.", "biometric_disabled"); return; }
+        if (BiometricManager.from(getContext()).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK) != BiometricManager.BIOMETRIC_SUCCESS) { call.reject("Set up fingerprint or face unlock in Android settings first.", "biometric_unavailable"); return; }
+        if (!(getActivity() instanceof FragmentActivity)) { call.reject("Biometric unlock is unavailable in this app session.", "biometric_unavailable"); return; }
+        FragmentActivity host = (FragmentActivity) getActivity();
+        host.runOnUiThread(() -> {
+            try {
+                BiometricPrompt prompt = new BiometricPrompt(host, ContextCompat.getMainExecutor(getContext()), new BiometricPrompt.AuthenticationCallback() {
+                    @Override public void onAuthenticationSucceeded(@NonNull BiometricPrompt.AuthenticationResult result) { call.resolve(new JSObject().put("unlocked", true)); }
+                    @Override public void onAuthenticationError(int errorCode, @NonNull CharSequence errString) { call.reject(errString.toString(), "biometric_authentication_cancelled"); }
+                    @Override public void onAuthenticationFailed() { /* prompt remains open; Android displays the retry state */ }
+                });
+                BiometricPrompt.PromptInfo info = new BiometricPrompt.PromptInfo.Builder().setTitle("Unlock Attendance Tracker")
+                        .setSubtitle("Use your device fingerprint or face unlock").setNegativeButtonText("Cancel")
+                        .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK).build();
+                prompt.authenticate(info);
+            } catch (Exception error) {
+                call.reject("Could not open biometric unlock. Use your PIN or try again.", "biometric_prompt_error", error);
+            }
+        });
+    }
+
+    private android.content.SharedPreferences lockPreferences() { return getContext().getSharedPreferences("app_lock_preferences", android.content.Context.MODE_PRIVATE); }
+    private static byte[] derivePin(char[] pin, byte[] salt) throws Exception {
+        PBEKeySpec spec = new PBEKeySpec(pin, salt, 160000, 256);
+        try { return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded(); }
+        finally { spec.clearPassword(); }
     }
 
     @PluginMethod public void exportBackup(PluginCall call) {

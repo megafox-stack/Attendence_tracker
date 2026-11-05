@@ -7,6 +7,7 @@ import { hasSessionToken } from '../services/apiClient.js';
 import { getDashboardStatistics, resetAttendanceRecords } from '../services/attendanceService.js';
 import { getSchedulerStatus } from '../services/schedulerService.js';
 import { exportLocalBackup, importLocalBackup } from '../services/backupService.js';
+import { getAppLockState, isNativeAppLockAvailable, setAppLockPin, updateAppLock } from '../services/appLockService.js';
 
 function Metric({ icon: Icon, label, value, accent = '' }) {
   return <div className="overview-metric"><span className={`metric-icon ${accent}`}><Icon size={16} /></span><span className="metric-text"><small>{label}</small><strong>{value}</strong></span></div>;
@@ -24,6 +25,12 @@ export default function HomePage({ settingsOpen = false, onSettingsClose = () =>
   const [backupError, setBackupError] = useState('');
   const [resetMessage, setResetMessage] = useState('');
   const [backupBusy, setBackupBusy] = useState(false);
+  const [appLock, setAppLock] = useState(null);
+  const [appLockBusy, setAppLockBusy] = useState(false);
+  const [appLockError, setAppLockError] = useState('');
+  const [appLockPin, setAppLockPinValue] = useState('');
+  const [appLockPinConfirm, setAppLockPinConfirm] = useState('');
+  const [appLockPinSetupOpen, setAppLockPinSetupOpen] = useState(false);
   const load = useCallback(async (quiet = false) => {
     if (!hasSessionToken()) { setDashboard(null); setScheduler(null); setState('signed-out'); return; }
     if (!quiet) setState('loading');
@@ -32,6 +39,42 @@ export default function HomePage({ settingsOpen = false, onSettingsClose = () =>
       setDashboard(summary); setScheduler(schedulerResult.scheduler); setError(''); setState('ready');
     } catch (requestError) { setState('error'); setError(requestError.message || 'Could not load local attendance data.'); }
   }, []);
+  useEffect(() => {
+    if (!settingsOpen) return;
+    getAppLockState().then(setAppLock).catch((error) => setAppLock({ supported: isNativeAppLockAvailable(), enabled: false, biometricEnabled: false, pinEnabled: false, biometricAvailable: false, hasPin: false, error: error.message }));
+  }, [settingsOpen]);
+
+  async function saveLockPreferences(changes) {
+    if (!appLock || appLockBusy) return;
+    setAppLockBusy(true); setAppLockError('');
+    try {
+      const next = { enabled: changes.enabled ?? appLock.enabled, biometricEnabled: changes.biometricEnabled ?? appLock.biometricEnabled, pinEnabled: changes.pinEnabled ?? appLock.pinEnabled };
+      await updateAppLock(next);
+      const refreshed = await getAppLockState(); setAppLock(refreshed);
+      globalThis.dispatchEvent(new Event('attenda:app-lock-changed'));
+    } catch (error) { setAppLockError(error.message || 'Could not update App Lock settings.'); }
+    finally { setAppLockBusy(false); }
+  }
+
+  async function saveCustomPin(event) {
+    event.preventDefault(); if (appLockBusy) return;
+    setAppLockBusy(true); setAppLockError('');
+    try {
+      await setAppLockPin(appLockPin, appLockPinConfirm);
+      const refreshed = await getAppLockState(); setAppLock(refreshed); setAppLockPinValue(''); setAppLockPinConfirm('');
+      globalThis.dispatchEvent(new Event('attenda:app-lock-changed'));
+    } catch (error) { setAppLockError(error.message || 'Could not save the PIN.'); }
+    finally { setAppLockBusy(false); }
+  }
+
+  function toggleAppLock() {
+    if (!appLock) return;
+    if (appLock.enabled) { saveLockPreferences({ enabled: false }); return; }
+    if (appLock.biometricEnabled || appLock.pinEnabled) { saveLockPreferences({ enabled: true }); return; }
+    if (appLock.biometricAvailable) { saveLockPreferences({ enabled: true, biometricEnabled: true }); return; }
+    setAppLockError('Set up a custom PIN below before turning on App Lock.');
+    setAppLockPinSetupOpen(true);
+  }
   useEffect(() => {
     load();
     const refresh = () => load(true);
@@ -103,6 +146,19 @@ export default function HomePage({ settingsOpen = false, onSettingsClose = () =>
         <button type="button" className="settings-action" disabled={state !== 'ready' || backupBusy} onClick={importBackup}><span className="settings-action-icon"><Upload size={17} /></span><span><strong>Restore backup</strong><small>Restore data from a saved backup file.</small></span></button>
         <button type="button" className="settings-action settings-action-danger" disabled={state !== 'ready' || !hasRecords || backupBusy} onClick={() => { setResetError(''); setResetMessage(''); setResetPhrase(''); setResetOpen(true); }}><span className="settings-action-icon"><Trash2 size={17} /></span><span><strong>Reset attendance</strong><small>Remove attendance records and correction history.</small></span></button>
       </div>
+      <section className="app-lock-settings" aria-labelledby="app-lock-settings-title">
+        <div className="settings-about-heading"><h3 id="app-lock-settings-title">App lock</h3><span>{appLock?.enabled ? 'On' : 'Off'}</span></div>
+        <p className="app-lock-settings-copy">Choose fingerprint/face, a custom PIN, or both. You can turn the lock on or off whenever you want.</p>
+        {!isNativeAppLockAvailable() && <p className="settings-modal-status">App Lock is available in the installed Android app.</p>}
+        {appLock && isNativeAppLockAvailable() && <>
+          <div className="app-lock-option app-lock-master"><span><strong>Require unlock</strong><small>Lock when opening the app and after returning from the background.</small></span><button type="button" className={`button button-small app-lock-toggle${appLock.enabled ? ' app-lock-toggle-on' : ''}`} aria-pressed={Boolean(appLock.enabled)} disabled={appLockBusy} onClick={toggleAppLock}>{appLockBusy ? 'Updating…' : appLock.enabled ? 'Turn App Lock Off' : 'Turn App Lock On'}</button></div>
+          <label className="app-lock-option"><span><strong>Fingerprint or face</strong><small>{appLock.biometricAvailable ? 'Uses biometric methods enrolled on this device.' : 'Set up fingerprint or face unlock in Android settings first.'}</small></span><input type="checkbox" checked={Boolean(appLock.biometricEnabled)} disabled={appLockBusy || !appLock.biometricAvailable} onChange={(event) => saveLockPreferences({ biometricEnabled: event.target.checked })} /></label>
+          <label className="app-lock-option"><span><strong>Custom PIN</strong><small>{appLock.hasPin ? 'A secure PIN is set on this device.' : 'Create a 4 to 8 digit PIN below.'}</small></span><input type="checkbox" checked={Boolean(appLock.pinEnabled)} disabled={appLockBusy || !appLock.hasPin} onChange={(event) => saveLockPreferences({ pinEnabled: event.target.checked })} /></label>
+          <details className="app-lock-pin-setup" open={appLockPinSetupOpen} onToggle={(event) => setAppLockPinSetupOpen(event.currentTarget.open)}><summary>{appLock.hasPin ? 'Change custom PIN' : 'Set up custom PIN'}</summary><form className="app-lock-pin-fields" onSubmit={saveCustomPin}><label className="field"><span>New PIN</span><input type="password" inputMode="numeric" autoComplete="new-password" minLength={4} maxLength={8} value={appLockPin} onChange={(event) => setAppLockPinValue(event.target.value.replace(/\D/g, ''))} required /></label><label className="field"><span>Confirm PIN</span><input type="password" inputMode="numeric" autoComplete="new-password" minLength={4} maxLength={8} value={appLockPinConfirm} onChange={(event) => setAppLockPinConfirm(event.target.value.replace(/\D/g, ''))} required /></label><button type="submit" className="button button-secondary button-small" disabled={appLockBusy || appLockPin.length < 4 || appLockPin !== appLockPinConfirm}>{appLockBusy ? 'Saving…' : 'Save PIN'}</button></form></details>
+          {appLock.enabled && <button type="button" className="button button-secondary button-small app-lock-now" onClick={() => globalThis.dispatchEvent(new Event('attenda:lock-now'))}><ShieldCheck size={14} />Lock now</button>}
+        </>}
+        {appLockError && <p className="settings-modal-status settings-modal-error" role="alert">{appLockError}</p>}
+      </section>
       <section className="settings-about" aria-labelledby="settings-about-title">
         <div className="settings-about-heading"><h3 id="settings-about-title">About</h3><span>Version 1.0</span></div>
         <details className="settings-about-detail"><summary>Release notes</summary><p>Local attendance storage, semester timetables, after-class Pending records, attendance reminders, manual attendance entry, CSV/XLSX import, and device backups.</p></details>

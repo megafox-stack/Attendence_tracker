@@ -46,4 +46,25 @@ export async function openNativeNotificationSettings() {
   return LocalAttendance.openNotificationSettings();
 }
 
+export async function getNativeAppLockState() {
+  if (!Capacitor.isNativePlatform()) return { supported: false, enabled: false, biometricEnabled: false, pinEnabled: false, biometricAvailable: false, hasPin: false };
+  return LocalAttendance.getAppLockState();
+}
+export async function updateNativeAppLock(settings) {
+  if (!Capacitor.isNativePlatform()) throw new Error('App Lock is available in the installed Android app.');
+  return LocalAttendance.updateAppLock(settings);
+}
+export async function setNativeAppLockPin(pin, confirmation) {
+  if (!Capacitor.isNativePlatform()) throw new Error('PIN setup is available in the installed Android app.');
+  return LocalAttendance.setAppLockPin({ pin, confirmation });
+}
+export async function verifyNativeAppLockPin(pin) {
+  if (!Capacitor.isNativePlatform()) throw new Error('PIN unlock is available in the installed Android app.');
+  return LocalAttendance.verifyAppLockPin({ pin });
+}
+export async function authenticateNativeAppLock() {
+  if (!Capacitor.isNativePlatform()) throw new Error('Biometric unlock is available in the installed Android app.');
+  return LocalAttendance.authenticateAppLock();
+}
+
 export function hasLocalDatabase() { return Capacitor.isNativePlatform(); }
