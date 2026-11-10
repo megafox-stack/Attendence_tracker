@@ -213,7 +213,7 @@ export default function ManualAttendancePage() {
 
           <section className="card manual-card">
             <div className="manual-card-heading"><span className="manual-card-icon"><Upload size={17} /></span><div><h2>Import from Excel or CSV</h2><p>Choose a file, map its columns, and preview rows before staging.</p></div></div>
-            <div className="manual-import-actions"><label className="button button-secondary manual-file-button"><FileSpreadsheet size={15} />Choose .xlsx or .csv<input ref={fileInput} type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={chooseFile} disabled={importBusy || busy} /></label>{importBusy && <span className="manual-muted"><LoaderCircle size={14} />Reading file…</span>}</div>
+            <div className="manual-import-actions"><label className="button button-secondary manual-file-button" onClick={() => globalThis.dispatchEvent(new Event('attenda:file-chooser-open'))}><FileSpreadsheet size={15} />Choose .xlsx or .csv<input ref={fileInput} type="file" accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { globalThis.dispatchEvent(new Event('attenda:file-chooser-close')); chooseFile(event); }} onCancel={() => globalThis.dispatchEvent(new Event('attenda:file-chooser-close'))} disabled={importBusy || busy} /></label>{importBusy && <span className="manual-muted"><LoaderCircle size={14} />Reading file…</span>}</div>
             <p className="manual-muted">Files are parsed on this device. Legacy .xls files are not supported.</p>
             {importError && <p className="form-error" role="alert">{importError}</p>}
             {importData && <div className="manual-import-preview">
