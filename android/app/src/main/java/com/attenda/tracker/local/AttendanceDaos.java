@@ -63,6 +63,7 @@ public final class AttendanceDaos {
         @Insert(onConflict = OnConflictStrategy.ABORT) void insert(ClassOccurrence row);
         @Query("DELETE FROM class_occurrences WHERE id=:id") int delete(String id);
         @Query("DELETE FROM class_occurrences WHERE semesterId=:semesterId") int deleteBySemester(String semesterId);
+        @Query("SELECT * FROM class_occurrences WHERE semesterId=:semesterId AND status='PENDING' AND classDate>=:fromDate") List<ClassOccurrence> futurePending(String semesterId, String fromDate);
         @Query("SELECT COUNT(*) FROM class_occurrences") int countAll();
         @Query("DELETE FROM class_occurrences") int deleteAll();
     }
@@ -78,6 +79,7 @@ public final class AttendanceDaos {
     @Dao public interface ChangeDao {
         @Query("SELECT * FROM attendance_changes WHERE occurrenceId=:occurrenceId ORDER BY changedAt, id") List<AttendanceChange> byOccurrence(String occurrenceId);
         @Insert(onConflict = OnConflictStrategy.ABORT) void insert(AttendanceChange row);
+        @Query("SELECT COUNT(*) FROM attendance_changes WHERE occurrenceId=:occurrenceId") int countForOccurrence(String occurrenceId);
         @Query("SELECT COUNT(*) FROM attendance_changes") int countAll();
         @Query("DELETE FROM attendance_changes") int deleteAll();
     }

@@ -38,7 +38,8 @@ public final class LocalAttendanceRepository {
     public static AttendanceDatabase database(Context context) {
         if (instance == null) {
             synchronized (LocalAttendanceRepository.class) {
-                if (instance == null) instance = Room.databaseBuilder(context.getApplicationContext(), AttendanceDatabase.class, "attendance-tracker.db").build();
+                if (instance == null) instance = Room.databaseBuilder(context.getApplicationContext(), AttendanceDatabase.class, "attendance-tracker.db")
+                        .addMigrations(AttendanceDatabase.MIGRATION_1_2).build();
             }
         }
         return instance;
@@ -66,6 +67,8 @@ public final class LocalAttendanceRepository {
             case "timetable.update": result = new JSONObject().put("entry", saveEntry(required(p, "id"), p)); break;
             case "timetable.active": result = setEntryActive(required(p, "id"), p.optBoolean("active", false)); break;
             case "timetable.delete": result = deleteEntry(required(p, "id")); break;
+            case "timetable.import": result = importTimetable(p); break;
+            case "timetable.clear": result = clearTimetable(); break;
             case "holiday.create": result = createHoliday(p); break;
             case "holiday.delete": result = deleteHoliday(required(p, "id")); break;
             case "attendance.classes": result = new JSONObject().put("date", required(p, "date")).put("records", occurrencesArray(db.occurrences().byDate(required(p, "date")))); break;
@@ -255,6 +258,118 @@ public final class LocalAttendanceRepository {
         return new JSONObject().put("preservedRecords", preserved);
     }
 
+    /** Applies a reviewed timetable atomically, preserving any occurrence history. */
+    private JSONObject importTimetable(JSONObject payload) throws Exception {
+        String mode = payload.optString("mode", "");
+        if (!"merge".equals(mode) && !"replace".equals(mode)) throw new IllegalArgumentException("Choose whether to merge or replace the current timetable.");
+        JSONArray rows = payload.optJSONArray("entries");
+        if (rows == null || rows.length() == 0 || rows.length() > 250) throw new IllegalArgumentException("Add between 1 and 250 reviewed classes before importing.");
+        Semester semester = requireCurrentSemester();
+        List<JSONObject> checked = new ArrayList<>();
+        Set<String> keys = new HashSet<>();
+        for (int i = 0; i < rows.length(); i++) {
+            JSONObject row = rows.optJSONObject(i);
+            if (row == null) throw new IllegalArgumentException("A reviewed class is invalid.");
+            int day = dayIndex(required(row, "day"));
+            if ((semester.workingDaysMask & (1 << day)) == 0) throw new IllegalArgumentException("Enable every imported class day in the semester working days first.");
+            String start = validTime(required(row, "start"));
+            String end = validTime(required(row, "end"));
+            if (end.compareTo(start) <= 0) throw new IllegalArgumentException("Each class must end after it starts.");
+            String subjectId = row.optString("subjectId", "").trim();
+            JSONObject newSubject = row.optJSONObject("newSubject");
+            if (subjectId.isEmpty() && newSubject == null) throw new IllegalArgumentException("Choose or add a subject for every imported class.");
+            String normalizedName = newSubject == null ? "" : required(newSubject, "name").trim();
+            String normalizedCode = newSubject == null ? "" : required(newSubject, "code").trim().toUpperCase(Locale.ROOT);
+            if (normalizedName.length() > 160 || normalizedCode.length() > 40) throw new IllegalArgumentException("New subject name or code is too long.");
+            String duplicateKey = day + "|" + start + "|" + end + "|" + (subjectId.isEmpty() ? normalizedCode : subjectId);
+            if (!keys.add(duplicateKey)) throw new IllegalArgumentException("The reviewed timetable contains a duplicate class. Remove or correct it before importing.");
+            JSONObject copy = new JSONObject(row.toString()).put("day", dayName(day)).put("start", start).put("end", end);
+            if (newSubject != null) copy.put("newSubject", new JSONObject().put("name", normalizedName).put("code", normalizedCode));
+            checked.add(copy);
+        }
+
+        final int[] added = {0};
+        final int[] skipped = {0};
+        final int[] preserved = {0};
+        transaction(() -> {
+            if ("replace".equals(mode)) {
+                clearFuturePendingForSemester(semester, preserved);
+                archiveOrDeleteCurrentEntries(semester.id);
+            }
+            for (JSONObject row : checked) {
+                Subject subject;
+                JSONObject newSubject = row.optJSONObject("newSubject");
+                if (newSubject != null) {
+                    String name = required(newSubject, "name").trim();
+                    String code = required(newSubject, "code").trim().toUpperCase(Locale.ROOT);
+                    if (name.isEmpty() || code.isEmpty()) throw new IllegalArgumentException("New subjects need both a name and a code.");
+                    subject = null;
+                    for (Subject existing : db.subjects().bySemester(semester.id)) if (existing.code.equalsIgnoreCase(code)) {
+                        if (!existing.name.equalsIgnoreCase(name)) throw new IllegalArgumentException("Subject code " + code + " already belongs to " + existing.name + ". Choose that subject or use another code.");
+                        subject = existing; break;
+                    }
+                    if (subject == null) {
+                        subject = new Subject(); subject.id = uuid(); subject.semesterId = semester.id;
+                        subject.name = name; subject.code = code; subject.active = true; db.subjects().insert(subject);
+                    }
+                } else {
+                    subject = db.subjects().byId(row.getString("subjectId"));
+                    if (subject == null || !subject.semesterId.equals(semester.id) || !subject.active) throw new IllegalArgumentException("An imported class refers to an unavailable subject.");
+                }
+                String day = row.getString("day"), start = row.getString("start"), end = row.getString("end");
+                boolean exactDuplicate = false;
+                for (TimetableEntry existing : db.timetable().bySemester(semester.id)) {
+                    if (existing.day.equals(day) && existing.start.equals(start) && existing.end.equals(end) && existing.subjectId.equals(subject.id)) { exactDuplicate = true; break; }
+                }
+                if (exactDuplicate) { skipped[0]++; continue; }
+                if (db.timetable().overlap(semester.id, day, start, end, null) != null) throw new IllegalArgumentException("An imported class overlaps an existing class on " + day + ". Resolve the overlap before importing.");
+                TimetableEntry entry = new TimetableEntry(); entry.id = uuid(); entry.semesterId = semester.id; entry.subjectId = subject.id;
+                entry.day = day; entry.start = start; entry.end = end; entry.room = row.optString("room", "").trim().isEmpty() ? null : row.optString("room").trim();
+                if (entry.room != null && entry.room.length() > 120) throw new IllegalArgumentException("Room or laboratory must be 120 characters or fewer.");
+                entry.effectiveFrom = semester.startDate; entry.effectiveUntil = semester.endDate; entry.active = true; entry.historicalOnly = false;
+                db.timetable().insert(entry); added[0]++;
+            }
+        });
+        return new JSONObject().put("added", added[0]).put("skippedDuplicates", skipped[0]).put("preservedPending", preserved[0]).put("mode", mode);
+    }
+
+    private JSONObject clearTimetable() throws Exception {
+        Semester semester = requireCurrentSemester();
+        final int[] removedPending = {0}; final int[] preservedPending = {0}; final int[] archivedEntries = {0}; final int[] deletedEntries = {0};
+        transaction(() -> {
+            LocalDate today = LocalDate.now(ZoneId.of(semester.timeZone));
+            for (ClassOccurrence record : db.occurrences().futurePending(semester.id, today.toString())) {
+                if (!"SCHEDULER".equals(record.origin) || (record.note != null && !record.note.trim().isEmpty()) || db.changes().countForOccurrence(record.id) > 0) { preservedPending[0]++; continue; }
+                db.occurrences().delete(record.id); removedPending[0]++;
+            }
+            archiveOrDeleteCurrentEntries(semester.id, archivedEntries, deletedEntries);
+        });
+        return new JSONObject().put("removedPending", removedPending[0]).put("preservedPending", preservedPending[0])
+                .put("archivedEntries", archivedEntries[0]).put("deletedEntries", deletedEntries[0]);
+    }
+
+    private void clearFuturePendingForSemester(Semester semester, int[] preserved) throws Exception {
+        LocalDate today = LocalDate.now(ZoneId.of(semester.timeZone));
+        for (ClassOccurrence record : db.occurrences().futurePending(semester.id, today.toString())) {
+            if (!"SCHEDULER".equals(record.origin) || (record.note != null && !record.note.trim().isEmpty()) || db.changes().countForOccurrence(record.id) > 0) { preserved[0]++; continue; }
+            db.occurrences().delete(record.id);
+        }
+    }
+
+    private void archiveOrDeleteCurrentEntries(String semesterId) throws Exception {
+        archiveOrDeleteCurrentEntries(semesterId, new int[] {0}, new int[] {0});
+    }
+
+    private void archiveOrDeleteCurrentEntries(String semesterId, int[] archived, int[] deleted) throws Exception {
+        for (TimetableEntry entry : db.timetable().bySemester(semesterId)) {
+            if (db.timetable().occurrenceCount(entry.id) > 0) {
+                entry.active = false; entry.historicalOnly = true; db.timetable().update(entry); archived[0]++;
+            } else {
+                db.timetable().delete(entry.id); deleted[0]++;
+            }
+        }
+    }
+
     private JSONObject createHoliday(JSONObject p) throws Exception {
         Semester s = requireCurrentSemester(); String date = text(p, "date"); validDate(date, "holiday date");
         String reason = p.optString("reason", "").trim(); if (reason.length() > 240) throw new IllegalArgumentException("Holiday reason must be 240 characters or fewer.");
@@ -309,7 +424,7 @@ public final class LocalAttendanceRepository {
                 ClassOccurrence occurrence = new ClassOccurrence(); occurrence.id = uuid(); occurrence.semesterId = s.id; occurrence.timetableEntryId = entry.id;
                 occurrence.subjectId = subject.id; occurrence.classDate = date; occurrence.start = entry.start; occurrence.end = entry.end;
                 occurrence.subjectNameSnapshot = subject.name; occurrence.subjectCodeSnapshot = subject.code; occurrence.roomSnapshot = entry.room;
-                occurrence.status = "PENDING"; occurrence.generatedAt = now;
+                occurrence.status = "PENDING"; occurrence.origin = "SCHEDULER"; occurrence.generatedAt = now;
                 if (db.occurrences().insertIgnore(occurrence) != -1) inserted[0]++;
             }
         });
@@ -465,7 +580,7 @@ public final class LocalAttendanceRepository {
                 ClassOccurrence occurrence = new ClassOccurrence(); occurrence.id = uuid(); occurrence.semesterId = semester.id;
                 occurrence.timetableEntryId = entry.id; occurrence.subjectId = subject.id; occurrence.classDate = date;
                 occurrence.start = start; occurrence.end = end; occurrence.subjectNameSnapshot = subject.name;
-                occurrence.subjectCodeSnapshot = subject.code; occurrence.roomSnapshot = entry.room; occurrence.status = "PENDING";
+                occurrence.subjectCodeSnapshot = subject.code; occurrence.roomSnapshot = entry.room; occurrence.status = "PENDING"; occurrence.origin = "MANUAL";
                 occurrence.note = reason.isEmpty() ? null : reason; occurrence.generatedAt = System.currentTimeMillis();
                 db.occurrences().insert(occurrence);
                 String normalized = normalizeStatus(status);
@@ -919,7 +1034,7 @@ public final class LocalAttendanceRepository {
     private JSONArray occurrencesJson(List<ClassOccurrence> rows) throws Exception { JSONArray a = new JSONArray(); for (ClassOccurrence row : rows) a.put(occurrenceJson(row)); return a; }
     private JSONArray occurrencesArray(List<ClassOccurrence> rows) throws Exception { return occurrencesJson(rows); }
     private JSONObject occurrenceJson(ClassOccurrence r) throws Exception { return new JSONObject().put("id", r.id).put("subjectId", r.subjectId).put("timetableEntryId", r.timetableEntryId).put("date", r.classDate).put("subject", r.subjectNameSnapshot).put("code", r.subjectCodeSnapshot).put("start", r.start).put("end", r.end).put("room", r.roomSnapshot == null ? JSONObject.NULL : r.roomSnapshot).put("status", titleStatus(r.status)).put("note", r.note == null ? JSONObject.NULL : r.note).put("finalizedAt", r.finalizedAt == null ? JSONObject.NULL : DateTimeFormatter.ISO_INSTANT.format(java.time.Instant.ofEpochMilli(r.finalizedAt))); }
-    private JSONObject backupOccurrenceJson(ClassOccurrence r) throws Exception { return occurrenceJson(r).put("semesterId", r.semesterId).put("generatedAt", r.generatedAt).put("finalizedAt", r.finalizedAt == null ? JSONObject.NULL : r.finalizedAt); }
+    private JSONObject backupOccurrenceJson(ClassOccurrence r) throws Exception { return occurrenceJson(r).put("semesterId", r.semesterId).put("generatedAt", r.generatedAt).put("origin", r.origin).put("finalizedAt", r.finalizedAt == null ? JSONObject.NULL : r.finalizedAt); }
     private JSONObject semesterJson(Semester s) throws Exception { if (s == null) return null; JSONArray days = new JSONArray(); for (int i=0;i<DAYS.length;i++) if ((s.workingDaysMask & (1 << i)) != 0) days.put(DAYS[i]); return new JSONObject().put("id", s.id).put("name", s.name).put("startDate", s.startDate).put("endDate", s.endDate).put("workingDays", days).put("attendanceTargetPercent", s.attendanceTargetPercent == null ? JSONObject.NULL : s.attendanceTargetPercent).put("status", s.status).put("timeZone", s.timeZone); }
     private JSONObject subjectJson(Subject s) throws Exception { return new JSONObject().put("id", s.id).put("name", s.name).put("code", s.code).put("attendanceTargetPercent", s.attendanceTargetPercent == null ? JSONObject.NULL : s.attendanceTargetPercent).put("active", s.active); }
     private JSONObject entryJson(TimetableEntry e) throws Exception { Subject s = db.subjects().byId(e.subjectId); return new JSONObject().put("id", e.id).put("subjectId", e.subjectId).put("subject", s == null ? "" : s.name).put("code", s == null ? "" : s.code).put("day", e.day).put("start", e.start).put("end", e.end).put("room", e.room == null ? JSONObject.NULL : e.room).put("active", e.active).put("effectiveFrom", e.effectiveFrom).put("effectiveUntil", e.effectiveUntil); }
@@ -964,7 +1079,7 @@ public final class LocalAttendanceRepository {
     private Subject parseSubject(JSONObject o)throws Exception{Subject s=new Subject();s.id=required(o,"id");s.semesterId=required(o,"semesterId");s.name=text(o,"name");s.code=text(o,"code");s.attendanceTargetPercent=nullableDouble(o,"attendanceTargetPercent");validateTarget(s.attendanceTargetPercent);s.active=o.optBoolean("active",true);return s;}
     private TimetableEntry parseEntryRow(JSONObject o)throws Exception{TimetableEntry e=new TimetableEntry();e.id=required(o,"id");e.semesterId=required(o,"semesterId");e.subjectId=required(o,"subjectId");e.day=dayName(dayIndex(text(o,"day")));e.start=validTime(text(o,"start"));e.end=validTime(text(o,"end"));if(e.end.compareTo(e.start)<=0)throw new IllegalArgumentException("Backup has an invalid timetable time range.");e.room=nullableText(o,"room");e.effectiveFrom=validDate(text(o,"effectiveFrom"),"timetable start date");e.effectiveUntil=validDate(text(o,"effectiveUntil"),"timetable end date");if(e.effectiveUntil.compareTo(e.effectiveFrom)<0)throw new IllegalArgumentException("Backup has invalid timetable dates.");e.active=o.optBoolean("active",true);e.historicalOnly=o.optBoolean("historicalOnly",false);return e;}
     private Holiday parseHoliday(JSONObject o)throws Exception{Holiday h=new Holiday();h.id=required(o,"id");h.semesterId=required(o,"semesterId");h.date=validDate(text(o,"date"),"holiday date");h.reason=nullableText(o,"reason");return h;}
-    private ClassOccurrence parseOccurrence(JSONObject o)throws Exception{ClassOccurrence r=new ClassOccurrence();r.id=required(o,"id");r.semesterId=required(o,"semesterId");r.timetableEntryId=required(o,"timetableEntryId");r.subjectId=required(o,"subjectId");r.classDate=validDate(text(o,"date"),"class date");r.start=validTime(text(o,"start"));r.end=validTime(text(o,"end"));if(r.end.compareTo(r.start)<=0)throw new IllegalArgumentException("Backup has an invalid class time range.");r.subjectNameSnapshot=text(o,"subject");r.subjectCodeSnapshot=text(o,"code");r.roomSnapshot=nullableText(o,"room");r.status=normalizeStatus(text(o,"status"));r.note=nullableText(o,"note");r.generatedAt=o.optLong("generatedAt",System.currentTimeMillis());r.finalizedAt=o.has("finalizedAt")&&!o.isNull("finalizedAt")?o.optLong("finalizedAt"):null;return r;}
+    private ClassOccurrence parseOccurrence(JSONObject o)throws Exception{ClassOccurrence r=new ClassOccurrence();r.id=required(o,"id");r.semesterId=required(o,"semesterId");r.timetableEntryId=required(o,"timetableEntryId");r.subjectId=required(o,"subjectId");r.classDate=validDate(text(o,"date"),"class date");r.start=validTime(text(o,"start"));r.end=validTime(text(o,"end"));if(r.end.compareTo(r.start)<=0)throw new IllegalArgumentException("Backup has an invalid class time range.");r.subjectNameSnapshot=text(o,"subject");r.subjectCodeSnapshot=text(o,"code");r.roomSnapshot=nullableText(o,"room");r.status=normalizeStatus(text(o,"status"));r.origin=o.optString("origin","UNKNOWN");if(!"SCHEDULER".equals(r.origin)&&!"MANUAL".equals(r.origin)&&!"UNKNOWN".equals(r.origin))throw new IllegalArgumentException("Backup contains an invalid attendance record origin.");r.note=nullableText(o,"note");r.generatedAt=o.optLong("generatedAt",System.currentTimeMillis());r.finalizedAt=o.has("finalizedAt")&&!o.isNull("finalizedAt")?o.optLong("finalizedAt"):null;return r;}
     private AttendanceChange parseChange(JSONObject o)throws Exception{AttendanceChange c=new AttendanceChange();c.id=required(o,"id");c.occurrenceId=required(o,"occurrenceId");c.actorType=o.optString("actorType","user");if(!"user".equals(c.actorType)&&!"system".equals(c.actorType))throw new IllegalArgumentException("Backup has an invalid attendance change actor.");c.oldStatus=normalizeStatus(text(o,"oldStatus"));c.newStatus=normalizeStatus(text(o,"newStatus"));if(c.oldStatus.equals(c.newStatus))throw new IllegalArgumentException("Backup has an invalid attendance change.");c.reason=nullableText(o,"reason");c.changedAt=o.optLong("changedAt",System.currentTimeMillis());return c;}
     private AppSetting parseSetting(JSONObject o)throws Exception{AppSetting s=new AppSetting();s.key=text(o,"key");s.value=o.optString("value","");return s;}
     private static String nullableText(JSONObject object,String key){return !object.has(key)||object.isNull(key)?null:object.optString(key,null);}

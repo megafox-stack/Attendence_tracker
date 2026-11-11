@@ -8,6 +8,7 @@ import { getDashboardStatistics, resetAttendanceRecords } from '../services/atte
 import { getSchedulerStatus } from '../services/schedulerService.js';
 import { exportLocalBackup, importLocalBackup } from '../services/backupService.js';
 import { getAppLockState, isNativeAppLockAvailable, setAppLockPin, updateAppLock } from '../services/appLockService.js';
+import TimetableImportModal, { ClearTimetableDialog } from '../components/TimetableImportModal.jsx';
 
 function Metric({ icon: Icon, label, value, accent = '' }) {
   return <div className="overview-metric"><span className={`metric-icon ${accent}`}><Icon size={16} /></span><span className="metric-text"><small>{label}</small><strong>{value}</strong></span></div>;
@@ -31,6 +32,9 @@ export default function HomePage({ settingsOpen = false, onSettingsClose = () =>
   const [appLockPin, setAppLockPinValue] = useState('');
   const [appLockPinConfirm, setAppLockPinConfirm] = useState('');
   const [appLockPinSetupOpen, setAppLockPinSetupOpen] = useState(false);
+  const [timetableImportOpen, setTimetableImportOpen] = useState(false);
+  const [clearTimetableOpen, setClearTimetableOpen] = useState(false);
+  const [timetableMessage, setTimetableMessage] = useState('');
   const load = useCallback(async (quiet = false) => {
     if (!hasSessionToken()) { setDashboard(null); setScheduler(null); setState('signed-out'); return; }
     if (!quiet) setState('loading');
@@ -144,6 +148,8 @@ export default function HomePage({ settingsOpen = false, onSettingsClose = () =>
       <div className="settings-action-list">
         <button type="button" className="settings-action" disabled={state !== 'ready' || backupBusy} onClick={exportBackup}><span className="settings-action-icon"><ArrowDownToLine size={17} /></span><span><strong>Export backup</strong><small>Save a copy of your local attendance data.</small></span></button>
         <button type="button" className="settings-action" disabled={state !== 'ready' || backupBusy} onClick={importBackup}><span className="settings-action-icon"><Upload size={17} /></span><span><strong>Restore backup</strong><small>Restore data from a saved backup file.</small></span></button>
+        <button type="button" className="settings-action" disabled={state !== 'ready' || backupBusy} onClick={() => { setTimetableMessage(''); setTimetableImportOpen(true); }}><span className="settings-action-icon"><CalendarDays size={17} /></span><span><strong>Upload timetable</strong><small>Read a JPG or PNG photo and review weekly classes before importing.</small></span></button>
+        <button type="button" className="settings-action settings-action-danger" disabled={state !== 'ready' || backupBusy} onClick={() => { setTimetableMessage(''); setClearTimetableOpen(true); }}><span className="settings-action-icon"><Trash2 size={17} /></span><span><strong>Clear timetable</strong><small>Remove recurring classes and eligible future Pending records.</small></span></button>
         <button type="button" className="settings-action settings-action-danger" disabled={state !== 'ready' || !hasRecords || backupBusy} onClick={() => { setResetError(''); setResetMessage(''); setResetPhrase(''); setResetOpen(true); }}><span className="settings-action-icon"><Trash2 size={17} /></span><span><strong>Reset attendance</strong><small>Remove attendance records and correction history.</small></span></button>
       </div>
       <section className="app-lock-settings" aria-labelledby="app-lock-settings-title">
@@ -168,9 +174,12 @@ export default function HomePage({ settingsOpen = false, onSettingsClose = () =>
       </section>
       {state !== 'ready' && <p className="settings-modal-status" role="status">{state === 'loading' ? 'Loading local data…' : state === 'signed-out' ? 'Open the installed app and set up local data to use these actions.' : error || 'Local data is unavailable.'}</p>}
       {resetMessage && <p className="settings-modal-status" role="status">{resetMessage}</p>}
+      {timetableMessage && <p className="settings-modal-status" role="status">{timetableMessage}</p>}
       {backupError && <p className="settings-modal-status settings-modal-error" role="alert">{backupError}</p>}
       {backupBusy && <p className="settings-modal-status" role="status">Working…</p>}
     </Overlay>}
+    {timetableImportOpen && <TimetableImportModal onClose={() => setTimetableImportOpen(false)} onImported={(text) => { setTimetableMessage(text); load(true); }} />}
+    {clearTimetableOpen && <ClearTimetableDialog onClose={() => setClearTimetableOpen(false)} onCleared={(text) => { setTimetableMessage(text); load(true); }} />}
     {resetOpen && <Overlay title="Reset all attendance records?" onClose={() => { if (!resetBusy) { setResetOpen(false); setResetPhrase(''); } }} footer={<><button type="button" className="button button-secondary" disabled={resetBusy} onClick={() => { setResetOpen(false); setResetPhrase(''); }}>Cancel</button><button type="button" className="button button-danger" disabled={resetBusy || resetPhrase.trim().toUpperCase() !== 'RESET'} onClick={confirmReset}>{resetBusy ? 'Resetting…' : <><Trash2 size={14} />Delete all records</>}</button></>}><p className="dialog-copy">This permanently removes all <strong>{summary?.total ?? 0}</strong> saved Pending, Present, Absent, and Cancelled attendance records and their correction history on this device.</p><p className="dialog-copy">Your semester, subjects, timetable, holidays, and scheduler setting on this device will be kept. If the scheduler is enabled, it may generate today’s scheduled class records again on its next check.</p><label className="field"><span>Type RESET to confirm <em>*</em></span><input type="text" value={resetPhrase} onChange={(event) => setResetPhrase(event.target.value)} autoComplete="off" autoCapitalize="characters" disabled={resetBusy} /></label>{resetError && <p className="form-error" role="alert">{resetError}</p>}</Overlay>}
   </>;
 }

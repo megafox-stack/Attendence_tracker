@@ -124,6 +124,7 @@ public class LocalAttendanceRepositoryTest {
         assertEquals("Test term", database.semesters().current().name);
         assertEquals(1, database.occurrences().countAll());
         assertEquals(1, database.changes().countAll());
+        assertEquals("SCHEDULER", database.occurrences().byId(id).origin);
         assertEquals("Absent", repository.execute("attendance.classes", new JSONObject().put("date", date.toString())).getJSONArray("records").getJSONObject(0).getString("status"));
     }
 
@@ -354,6 +355,104 @@ public class LocalAttendanceRepositoryTest {
         assertEquals(1, result.getInt("pendingCancelledByHoliday"));
         assertEquals("CANCELLED", database.occurrences().recent().get(0).status);
         assertEquals(1, database.holidays().bySemester(database.semesters().current().id).size());
+    }
+
+    @Test public void timetableMergeSkipsExactDuplicatesAndAddsNewEntries() throws Exception {
+        LocalDate date = LocalDate.now().plusDays(1);
+        String day = dayName(date.getDayOfWeek());
+        seed(date, day);
+        String subjectId = database.subjects().bySemester(database.semesters().current().id).get(0).id;
+        JSONArray rows = new JSONArray()
+                .put(new JSONObject().put("day", day).put("start", "09:00").put("end", "10:00").put("subjectId", subjectId))
+                .put(new JSONObject().put("day", day).put("start", "11:00").put("end", "12:00").put("subjectId", subjectId));
+
+        JSONObject result = repository.execute("timetable.import", new JSONObject().put("mode", "merge").put("entries", rows));
+
+        assertEquals(1, result.getInt("added"));
+        assertEquals(1, result.getInt("skippedDuplicates"));
+        assertEquals(2, database.timetable().bySemester(database.semesters().current().id).size());
+    }
+
+    @Test public void replacingTimetableKeepsReviewedAttendanceAndArchivesItsEntry() throws Exception {
+        LocalDate date = LocalDate.now().plusDays(1);
+        String day = dayName(date.getDayOfWeek());
+        String oldEntryId = seed(date, day);
+        JSONObject generated = generateAfterClass(date);
+        String reviewedId = generated.getJSONArray("records").getJSONObject(0).getString("id");
+        repository.execute("attendance.update", new JSONObject().put("id", reviewedId).put("status", "Present"));
+        String subjectId = database.timetable().byId(oldEntryId).subjectId;
+        JSONArray rows = new JSONArray().put(new JSONObject().put("day", day).put("start", "11:00").put("end", "12:00").put("subjectId", subjectId));
+
+        JSONObject result = repository.execute("timetable.import", new JSONObject().put("mode", "replace").put("entries", rows));
+
+        assertEquals(1, result.getInt("added"));
+        assertEquals(true, database.timetable().byId(oldEntryId).historicalOnly);
+        assertEquals("PRESENT", database.occurrences().byId(reviewedId).status);
+        assertEquals(1, repository.execute("attendance.history", new JSONObject()).getJSONArray("records").length());
+        assertEquals(1, database.timetable().bySemester(database.semesters().current().id).size());
+    }
+
+    @Test public void clearTimetableRemovesEligibleFuturePendingAndPreservesReviewedHistory() throws Exception {
+        LocalDate date = LocalDate.now().plusDays(1);
+        String day = dayName(date.getDayOfWeek());
+        String reviewedEntryId = seed(date, day);
+        JSONObject first = generateAfterClass(date);
+        String reviewedId = first.getJSONArray("records").getJSONObject(0).getString("id");
+        repository.execute("attendance.update", new JSONObject().put("id", reviewedId).put("status", "Present"));
+        String subjectId = database.timetable().byId(reviewedEntryId).subjectId;
+        repository.execute("timetable.create", new JSONObject().put("subjectId", subjectId).put("day", day).put("start", "11:00").put("end", "12:00"));
+        JSONObject second = generateAfterClass(date);
+        assertEquals(1, second.getInt("created"));
+
+        JSONObject result = repository.execute("timetable.clear", new JSONObject());
+
+        assertEquals(1, result.getInt("removedPending"));
+        assertEquals(1, result.getInt("archivedEntries"));
+        assertEquals(0, database.timetable().bySemester(database.semesters().current().id).size());
+        assertEquals("PRESENT", database.occurrences().byId(reviewedId).status);
+        assertEquals(1, repository.execute("attendance.history", new JSONObject()).getJSONArray("records").length());
+    }
+
+    @Test public void clearingRecurringTimetableDoesNotDeleteManualPendingAttendance() throws Exception {
+        LocalDate date = LocalDate.now().plusDays(1);
+        String day = dayName(date.getDayOfWeek());
+        String recurringEntryId = seed(date, day);
+        com.attenda.tracker.local.Entities.Semester semester = database.semesters().current();
+        com.attenda.tracker.local.Entities.Subject subject = database.subjects().bySemester(semester.id).get(0);
+        com.attenda.tracker.local.Entities.ClassOccurrence oldPending = new com.attenda.tracker.local.Entities.ClassOccurrence();
+        oldPending.id = "old-pending"; oldPending.semesterId = semester.id; oldPending.timetableEntryId = recurringEntryId; oldPending.subjectId = subject.id;
+        oldPending.classDate = date.toString(); oldPending.start = "09:00"; oldPending.end = "10:00"; oldPending.subjectNameSnapshot = subject.name;
+        oldPending.subjectCodeSnapshot = subject.code; oldPending.status = "PENDING"; oldPending.generatedAt = System.currentTimeMillis();
+        // Rows created before the origin migration default to UNKNOWN and must be preserved safely.
+        database.occurrences().insert(oldPending);
+        com.attenda.tracker.local.Entities.TimetableEntry manualEntry = new com.attenda.tracker.local.Entities.TimetableEntry();
+        manualEntry.id = "manual-entry"; manualEntry.semesterId = semester.id; manualEntry.subjectId = subject.id;
+        manualEntry.day = day; manualEntry.start = "13:00"; manualEntry.end = "14:00"; manualEntry.effectiveFrom = date.toString();
+        manualEntry.effectiveUntil = date.toString(); manualEntry.active = false; manualEntry.historicalOnly = true;
+        database.timetable().insert(manualEntry);
+        com.attenda.tracker.local.Entities.ClassOccurrence manual = new com.attenda.tracker.local.Entities.ClassOccurrence();
+        manual.id = "manual-occurrence"; manual.semesterId = semester.id; manual.timetableEntryId = manualEntry.id; manual.subjectId = subject.id;
+        manual.classDate = date.toString(); manual.start = "13:00"; manual.end = "14:00"; manual.subjectNameSnapshot = subject.name;
+        manual.subjectCodeSnapshot = subject.code; manual.status = "PENDING"; manual.origin = "MANUAL"; manual.generatedAt = System.currentTimeMillis();
+        database.occurrences().insert(manual);
+
+        repository.execute("timetable.clear", new JSONObject());
+
+        assertNotNull(database.occurrences().byId("old-pending"));
+        assertNotNull(database.occurrences().byId("manual-occurrence"));
+        assertEquals(2, repository.execute("attendance.history", new JSONObject()).getJSONArray("records").length());
+    }
+
+    @Test public void invalidTimetableImportRollsBackAllRows() throws Exception {
+        LocalDate date = LocalDate.now().plusDays(1);
+        String day = dayName(date.getDayOfWeek());
+        seed(date, day);
+        JSONArray rows = new JSONArray()
+                .put(new JSONObject().put("day", day).put("start", "11:00").put("end", "12:00").put("subjectId", database.subjects().bySemester(database.semesters().current().id).get(0).id))
+                .put(new JSONObject().put("day", day).put("start", "12:00").put("end", "13:00").put("subjectId", "missing-subject"));
+
+        assertThrows(IllegalArgumentException.class, () -> repository.execute("timetable.import", new JSONObject().put("mode", "merge").put("entries", rows)));
+        assertEquals(1, database.timetable().bySemester(database.semesters().current().id).size());
     }
 
     private String seed(LocalDate date, String day) throws Exception {

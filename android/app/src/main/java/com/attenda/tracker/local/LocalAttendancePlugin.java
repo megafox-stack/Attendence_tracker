@@ -4,6 +4,7 @@ import android.content.Intent;
 import android.Manifest;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.database.Cursor;
 import android.os.Build;
 import android.provider.Settings;
 import androidx.core.app.NotificationManagerCompat;
@@ -34,6 +35,10 @@ import java.util.Arrays;
 import android.util.Base64;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.text.Text;
+import com.google.mlkit.vision.text.TextRecognition;
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions;
 import org.json.JSONObject;
 
 @CapacitorPlugin(name = "LocalAttendance", permissions = {
@@ -259,6 +264,57 @@ public final class LocalAttendancePlugin extends Plugin {
         startActivityForResult(call, intent, "handleBackupImportResult");
     }
 
+    @PluginMethod public void pickTimetableImage(PluginCall call) {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[] {"image/jpeg", "image/png"});
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(call, intent, "handleTimetableImageResult");
+    }
+
+    @ActivityCallback private void handleTimetableImageResult(@NonNull PluginCall call, @NonNull ActivityResult result) {
+        if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) {
+            call.resolve(new JSObject().put("cancelled", true)); return;
+        }
+        Uri uri = result.getData().getData();
+        try {
+            String mime = getContext().getContentResolver().getType(uri);
+            String name = displayName(uri).toLowerCase(java.util.Locale.ROOT);
+            boolean jpeg = "image/jpeg".equalsIgnoreCase(mime) || name.endsWith(".jpg") || name.endsWith(".jpeg");
+            boolean png = "image/png".equalsIgnoreCase(mime) || name.endsWith(".png");
+            if (!jpeg && !png) { call.reject("Choose a JPG or PNG timetable image.", "unsupported_image_type"); return; }
+            InputImage image = InputImage.fromFilePath(getContext(), uri);
+            com.google.mlkit.vision.text.TextRecognizer recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS);
+            recognizer.process(image)
+                    .addOnSuccessListener(text -> {
+                        try {
+                            org.json.JSONArray lines = new org.json.JSONArray();
+                            for (Text.TextBlock block : text.getTextBlocks()) for (Text.Line line : block.getLines()) {
+                                android.graphics.Rect bounds = line.getBoundingBox();
+                                if (bounds == null || line.getText() == null || line.getText().trim().isEmpty()) continue;
+                                lines.put(new JSONObject().put("text", line.getText().trim())
+                                        .put("left", bounds.left / (double) image.getWidth()).put("top", bounds.top / (double) image.getHeight())
+                                        .put("right", bounds.right / (double) image.getWidth()).put("bottom", bounds.bottom / (double) image.getHeight())
+                                        .put("centerX", bounds.centerX() / (double) image.getWidth()).put("centerY", bounds.centerY() / (double) image.getHeight()));
+                            }
+                            recognizer.close();
+                            call.resolve(new JSObject().put("cancelled", false).put("width", image.getWidth()).put("height", image.getHeight()).put("lines", lines));
+                        } catch (Exception error) { recognizer.close(); call.reject("Could not read the recognized timetable text.", "timetable_ocr_error", error); }
+                    })
+                    .addOnFailureListener(error -> { recognizer.close(); call.reject("Text could not be read from this image. Try a clearer JPG or PNG photo.", "timetable_ocr_error", error); });
+        } catch (Exception error) {
+            call.reject("Could not open this image. Choose a clear JPG or PNG file.", "timetable_image_error", error);
+        }
+    }
+
+    private String displayName(Uri uri) {
+        try (Cursor cursor = getContext().getContentResolver().query(uri, new String[] {android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) return cursor.getString(0);
+        } catch (Exception ignored) { }
+        return "";
+    }
+
     @ActivityCallback private void handleBackupImportResult(@NonNull PluginCall call, @NonNull ActivityResult result) {
         if (result.getResultCode() != android.app.Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) {
             call.resolve(new JSObject().put("cancelled", true)); return;
@@ -298,7 +354,8 @@ public final class LocalAttendancePlugin extends Plugin {
                 || "subject.update".equals(action)
                 || "timetable.create".equals(action) || "timetable.update".equals(action) || "timetable.active".equals(action) || "timetable.delete".equals(action)
                 || "holiday.create".equals(action) || "holiday.delete".equals(action) || "manual.commit".equals(action)
-                || "notifications.settings.save".equals(action) || "backup.restore".equals(action);
+                || "notifications.settings.save".equals(action) || "backup.restore".equals(action)
+                || "timetable.import".equals(action) || "timetable.clear".equals(action);
     }
 
     private static boolean shouldReconcileScheduler(String action) {
@@ -306,6 +363,7 @@ public final class LocalAttendancePlugin extends Plugin {
                 || "semester.save".equals(action) || "semester.create".equals(action) || "semester.select".equals(action) || "semester.delete".equals(action)
                 || "subject.create".equals(action) || "subject.update".equals(action) || "subject.delete".equals(action)
                 || "timetable.create".equals(action) || "timetable.update".equals(action) || "timetable.active".equals(action) || "timetable.delete".equals(action)
+                || "timetable.import".equals(action) || "timetable.clear".equals(action)
                 || "holiday.create".equals(action) || "holiday.delete".equals(action) || "backup.restore".equals(action) || "manual.commit".equals(action);
     }
 }

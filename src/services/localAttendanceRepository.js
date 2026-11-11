@@ -9,6 +9,7 @@ if (typeof document !== 'undefined') {
 const writes = new Set([
   'semester.save', 'semester.create', 'semester.select', 'semester.delete', 'subject.create', 'subject.update', 'subject.delete',
   'timetable.create', 'timetable.update', 'timetable.active', 'timetable.delete',
+  'timetable.import', 'timetable.clear',
   'holiday.create', 'holiday.delete', 'attendance.generate', 'attendance.update', 'attendance.delete',
   'attendance.bulk', 'attendance.submit', 'attendance.reset', 'scheduler.update', 'settings.save', 'settings.delete', 'notifications.settings.save', 'backup.restore',
   'manual.commit',
@@ -29,6 +30,18 @@ export async function localRequest(action, payload = {}) {
     wrapped.code = error?.code || 'local_database_error';
     throw wrapped;
   }
+}
+
+export async function pickTimetableImage() {
+  if (!Capacitor.isNativePlatform()) {
+    const error = new Error('Timetable image import is available in the installed Android app.');
+    error.code = 'native_image_picker_unavailable';
+    throw error;
+  }
+  globalThis.dispatchEvent?.(new Event('attenda:file-chooser-open'));
+  try { return await LocalAttendance.pickTimetableImage(); }
+  catch (error) { throw new Error(error?.message || 'Could not read the timetable image.'); }
+  finally { globalThis.dispatchEvent?.(new Event('attenda:file-chooser-close')); }
 }
 
 export async function getNativeNotificationPermission() {

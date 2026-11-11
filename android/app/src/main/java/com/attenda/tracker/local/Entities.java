@@ -5,6 +5,7 @@ import androidx.room.Entity;
 import androidx.room.ForeignKey;
 import androidx.room.Index;
 import androidx.room.PrimaryKey;
+import androidx.room.ColumnInfo;
 
 /** Local, user-owned data records. Dates and local class times use ISO strings. */
 public final class Entities {
@@ -67,6 +68,7 @@ public final class Entities {
         @NonNull public String subjectCodeSnapshot = "";
         public String roomSnapshot;
         @NonNull public String status = "PENDING";
+        @NonNull @ColumnInfo(defaultValue = "'UNKNOWN'") public String origin = "UNKNOWN";
         public String note;
         public long generatedAt;
         public Long finalizedAt;

@@ -59,6 +59,9 @@ dependencies {
     androidTestImplementation "androidx.room:room-testing:2.8.5"
     androidTestImplementation "androidx.test:core:1.6.1"
 
+    // Bundle the OCR model so timetable image recognition works without a network connection.
+    implementation "com.google.mlkit:text-recognition:16.0.1"
+
     // WorkManager replaces the API-process scheduler with local background work.
     implementation "androidx.work:work-runtime:2.12.0"
     androidTestImplementation "androidx.work:work-testing:2.12.0"
