@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Check, ImageUp, Plus, Trash2 } from 'lucide-react';
+import { AlertCircle, Check, ImageUp, Plus, Trash2, UsersRound } from 'lucide-react';
 import { Field, Notice, Overlay, SelectField } from '../App.jsx';
 import { getCurrentSemester } from '../services/semesterService.js';
 import { getSubjects } from '../services/subjectsService.js';
@@ -9,12 +9,16 @@ import { matchSubjectName, parseTimetableOcr } from '../utils/timetableOcr.js';
 import { DAYS } from '../utils/dateUtils.js';
 import './TimetableImportModal.css';
 
-const emptyClass = (day = 'Monday') => ({ day, subjectName: '', subjectId: '', start: '', end: '', room: '', newSubject: null });
+const reviewId = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const emptyClass = (day = 'Monday') => ({ reviewId: reviewId(), day, subjectName: '', subjectId: '', start: '', end: '', room: '', newSubject: null });
 
 export default function TimetableImportModal({ onClose, onImported = () => {} }) {
   const [semester, setSemester] = useState(null);
   const [subjects, setSubjects] = useState([]);
   const [entries, setEntries] = useState([]);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkSubjectId, setBulkSubjectId] = useState('');
+  const [bulkNewSubject, setBulkNewSubject] = useState({ name: '', code: '' });
   const [hasImage, setHasImage] = useState(false);
   const [detectedDates, setDetectedDates] = useState([]);
   const [warnings, setWarnings] = useState([]);
@@ -37,6 +41,7 @@ export default function TimetableImportModal({ onClose, onImported = () => {} })
 
   const workingDays = useMemo(() => (semester?.workingDays || DAYS).filter((day) => DAYS.includes(day)), [semester]);
   const unresolvedCount = entries.filter((entry) => !entry.subjectId && !entry.newSubject).length;
+  const selectedCount = entries.filter((entry) => selectedIds.has(entry.reviewId)).length;
   const canImport = entries.length > 0 && unresolvedCount === 0 && entries.every((entry) => workingDays.includes(entry.day) && entry.start && entry.end && entry.end > entry.start);
 
   async function selectImage() {
@@ -47,9 +52,9 @@ export default function TimetableImportModal({ onClose, onImported = () => {} })
       const parsed = parseTimetableOcr(result.lines || []);
       const mapped = parsed.entries.map((entry) => {
         const match = matchSubjectName(entry.subjectName, subjects);
-        return { ...entry, subjectId: match?.id || '', newSubject: null };
+        return { ...entry, reviewId: reviewId(), subjectId: match?.id || '', newSubject: null };
       });
-      setHasImage(true); setEntries(mapped); setWarnings(parsed.warnings); setDetectedDates(parsed.detectedDates);
+      setHasImage(true); setEntries(mapped); setSelectedIds(new Set()); setBulkSubjectId(''); setBulkNewSubject({ name: '', code: '' }); setWarnings(parsed.warnings); setDetectedDates(parsed.detectedDates);
       if (!mapped.length && parsed.warnings.length === 0) setWarnings(['No class entries were found in this image. Try a clearer, straight-on photo.']);
       if (mapped.length) setMessage(`Read ${mapped.length} possible class ${mapped.length === 1 ? 'entry' : 'entries'}. Check every row before importing.`);
     } catch (requestError) { setError(requestError.message || 'Could not read the timetable image.'); }
@@ -58,6 +63,50 @@ export default function TimetableImportModal({ onClose, onImported = () => {} })
 
   function updateEntry(index, changes) {
     setEntries((current) => current.map((entry, i) => i === index ? { ...entry, ...changes } : entry));
+  }
+
+  function toggleSelected(id) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function applyBulkSubject() {
+    const subject = subjects.find((item) => item.id === bulkSubjectId);
+    if (!subject || selectedCount === 0) return;
+    setError('');
+    setEntries((current) => current.map((entry) => selectedIds.has(entry.reviewId)
+      ? { ...entry, subjectId: subject.id, subjectName: subject.name, newSubject: null }
+      : entry));
+    setMessage(`Applied ${subject.name} to ${selectedCount} selected ${selectedCount === 1 ? 'class' : 'classes'} in this review.`);
+  }
+
+  function applyBulkNewSubject() {
+    const name = bulkNewSubject.name.trim();
+    const code = bulkNewSubject.code.trim().toUpperCase();
+    if (!selectedCount) { setError('Select one or more classes first.'); return; }
+    if (!name || !code) { setError('Enter both the new subject name and code.'); return; }
+    if (name.length > 160 || code.length > 40) { setError('Subject name must be 160 characters or fewer, and code must be 40 characters or fewer.'); return; }
+    const existing = subjects.find((item) => item.code.trim().toLowerCase() === code.toLowerCase());
+    if (existing && existing.name.trim().toLowerCase() !== name.toLowerCase()) {
+      setError(`Subject code ${code} already belongs to ${existing.name}. Choose that subject or use another code.`);
+      return;
+    }
+    setError('');
+    if (existing) {
+      setBulkSubjectId(existing.id);
+      setEntries((current) => current.map((entry) => selectedIds.has(entry.reviewId)
+        ? { ...entry, subjectId: existing.id, subjectName: existing.name, newSubject: null }
+        : entry));
+      setMessage(`Applied the existing subject ${existing.name} to ${selectedCount} selected ${selectedCount === 1 ? 'class' : 'classes'}.`);
+    } else {
+      setEntries((current) => current.map((entry) => selectedIds.has(entry.reviewId)
+        ? { ...entry, subjectId: '', subjectName: name, newSubject: { name, code } }
+        : entry));
+      setMessage(`Prepared ${name} for ${selectedCount} selected ${selectedCount === 1 ? 'class' : 'classes'}. It will be created once when you confirm the timetable import.`);
+    }
   }
 
   async function confirmImport() {
@@ -85,9 +134,14 @@ export default function TimetableImportModal({ onClose, onImported = () => {} })
       {error && <p className="settings-modal-status settings-modal-error" role="alert">{error}</p>}
       {(entries.length > 0 || hasImage) && <>
         <div className="timetable-import-list-heading"><div><strong>Review classes</strong><small>{entries.length} suggested · {unresolvedCount} need a subject match</small></div><button type="button" className="button button-secondary button-small" onClick={() => setEntries((current) => [...current, emptyClass(workingDays[0] || 'Monday')])}><Plus size={14} />Add class</button></div>
+        <section className="timetable-bulk-panel" aria-label="Bulk class actions">
+          <div className="timetable-bulk-heading"><div><strong><UsersRound size={14} />Bulk subject actions</strong><small>{selectedCount} selected · changes remain in this review until import is confirmed</small></div><div className="timetable-bulk-selection"><button type="button" onClick={() => setSelectedIds(new Set(entries.map((entry) => entry.reviewId)))} disabled={!entries.length}>Select all</button><button type="button" onClick={() => setSelectedIds(new Set())} disabled={!selectedCount}>Clear</button></div></div>
+          <div className="timetable-bulk-row"><SelectField label="Apply saved subject" value={bulkSubjectId} onChange={(event) => setBulkSubjectId(event.target.value)} disabled={!subjects.length}><option value="">Choose a subject</option>{subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name} ({subject.code})</option>)}</SelectField><button type="button" className="button button-secondary button-small" onClick={applyBulkSubject} disabled={!selectedCount || !bulkSubjectId}>Apply to selected</button></div>
+          <div className="timetable-bulk-row timetable-bulk-new"><Field label="New subject name" value={bulkNewSubject.name} onChange={(event) => setBulkNewSubject((current) => ({ ...current, name: event.target.value }))} placeholder="Subject name" /><Field label="Subject code" value={bulkNewSubject.code} onChange={(event) => setBulkNewSubject((current) => ({ ...current, code: event.target.value }))} placeholder="Code" /><button type="button" className="button button-secondary button-small" onClick={applyBulkNewSubject} disabled={!selectedCount || !bulkNewSubject.name.trim() || !bulkNewSubject.code.trim()}><Plus size={14} />Use for selected</button></div>
+        </section>
         {!entries.length && <p className="timetable-import-intro">No rows were recognized. You can add the timetable classes manually below.</p>}
-        <div className="timetable-import-list">{entries.map((entry, index) => <article className="timetable-import-row" key={`${index}-${entry.day}-${entry.start}`}>
-          <div className="timetable-import-row-top"><strong>Class {index + 1}</strong><button type="button" className="icon-button" aria-label={`Remove class ${index + 1}`} onClick={() => setEntries((current) => current.filter((_, i) => i !== index))}><Trash2 size={14} /></button></div>
+        <div className="timetable-import-list">{entries.map((entry, index) => <article className={`timetable-import-row${selectedIds.has(entry.reviewId) ? ' timetable-import-row-selected' : ''}`} key={entry.reviewId}>
+          <div className="timetable-import-row-top"><label className="timetable-import-select"><input type="checkbox" checked={selectedIds.has(entry.reviewId)} onChange={() => toggleSelected(entry.reviewId)} aria-label={`Select class ${index + 1} for bulk actions`} /><strong>Class {index + 1}</strong></label><button type="button" className="icon-button" aria-label={`Remove class ${index + 1}`} onClick={() => { setEntries((current) => current.filter((_, i) => i !== index)); setSelectedIds((current) => { const next = new Set(current); next.delete(entry.reviewId); return next; }); }}><Trash2 size={14} /></button></div>
           <SelectField label="Day" value={entry.day} onChange={(event) => updateEntry(index, { day: event.target.value })}>{DAYS.map((day) => <option key={day} value={day} disabled={!workingDays.includes(day)}>{workingDays.includes(day) ? day : `${day} (not enabled)`}</option>)}</SelectField>
           <SelectField label="Subject" value={entry.newSubject ? '__new__' : entry.subjectId} onChange={(event) => {
             const selected = event.target.value;

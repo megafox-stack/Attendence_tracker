@@ -99,7 +99,11 @@ public final class LocalAttendanceRepository {
             case "notifications.reminders": result = new JSONObject().put("reminders", notificationReminders(p.optInt("days", 14))); break;
             case "notifications.classReminder": result = classReminder(p); break;
             case "backup.snapshot": result = backupSnapshot(); break;
-            case "backup.restore": result = restoreBackup(p); break;
+            case "backup.restore": {
+                JSONObject backup = p.optJSONObject("backup");
+                result = restoreBackup(backup == null ? p : backup);
+                break;
+            }
             default: throw new IllegalArgumentException("Unsupported local data operation: " + action);
         }
         return result;

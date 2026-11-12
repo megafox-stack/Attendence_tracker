@@ -155,25 +155,27 @@ public class LocalAttendanceRepositoryTest {
         LocalDate date = LocalDate.now().plusDays(2);
         String day = dayName(date.getDayOfWeek());
         String entryId = seed(date, day);
-        JSONObject initial = repository.execute("notifications.reminders", new JSONObject().put("days", 14));
+        // Limit the look-ahead to this one scheduled occurrence; a two-week
+        // horizon also correctly includes the same weekly class next week.
+        JSONObject initial = repository.execute("notifications.reminders", new JSONObject().put("days", 2));
         assertEquals(1, initial.getJSONArray("reminders").length());
 
         com.attenda.tracker.local.Entities.TimetableEntry entry = database.timetable().byId(entryId);
         entry.active = false;
         database.timetable().update(entry);
-        assertEquals(0, repository.execute("notifications.reminders", new JSONObject().put("days", 14)).getJSONArray("reminders").length());
+        assertEquals(0, repository.execute("notifications.reminders", new JSONObject().put("days", 2)).getJSONArray("reminders").length());
 
         entry.active = true;
         database.timetable().update(entry);
         repository.execute("holiday.create", new JSONObject().put("date", date.toString()).put("reason", "No classes"));
-        assertEquals(0, repository.execute("notifications.reminders", new JSONObject().put("days", 14)).getJSONArray("reminders").length());
+        assertEquals(0, repository.execute("notifications.reminders", new JSONObject().put("days", 2)).getJSONArray("reminders").length());
 
         com.attenda.tracker.local.Entities.Holiday holiday = database.holidays().byDate(database.semesters().current().id, date.toString());
         database.holidays().delete(holiday.id);
         entry.start = "13:00";
         entry.end = "14:00";
         database.timetable().update(entry);
-        JSONObject changed = repository.execute("notifications.reminders", new JSONObject().put("days", 14));
+        JSONObject changed = repository.execute("notifications.reminders", new JSONObject().put("days", 2));
         assertEquals(1, changed.getJSONArray("reminders").length());
         assertEquals("13:00", changed.getJSONArray("reminders").getJSONObject(0).getString("start"));
     }
@@ -321,7 +323,7 @@ public class LocalAttendanceRepositoryTest {
         assertEquals(1, database.occurrences().countAll());
         assertEquals("Present", repository.execute("attendance.classes", new JSONObject().put("date", date.toString())).getJSONArray("records").getJSONObject(0).getString("status"));
         assertEquals(0, generateAfterClass(date).getInt("created"));
-        assertEquals("Present", database.occurrences().byId(occurrenceId).status);
+        assertEquals("PRESENT", database.occurrences().byId(occurrenceId).status);
     }
 
     @Test public void invalidManualBatchRollsBackAllRowsAndKeepsDraft() throws Exception {

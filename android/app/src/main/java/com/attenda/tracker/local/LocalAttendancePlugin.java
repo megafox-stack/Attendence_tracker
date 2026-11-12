@@ -293,7 +293,16 @@ public final class LocalAttendancePlugin extends Plugin {
                             for (Text.TextBlock block : text.getTextBlocks()) for (Text.Line line : block.getLines()) {
                                 android.graphics.Rect bounds = line.getBoundingBox();
                                 if (bounds == null || line.getText() == null || line.getText().trim().isEmpty()) continue;
-                                lines.put(new JSONObject().put("text", line.getText().trim())
+                                org.json.JSONArray elements = new org.json.JSONArray();
+                                for (Text.Element element : line.getElements()) {
+                                    android.graphics.Rect elementBounds = element.getBoundingBox();
+                                    if (elementBounds == null || element.getText() == null || element.getText().trim().isEmpty()) continue;
+                                    elements.put(new JSONObject().put("text", element.getText().trim())
+                                            .put("left", elementBounds.left / (double) image.getWidth()).put("top", elementBounds.top / (double) image.getHeight())
+                                            .put("right", elementBounds.right / (double) image.getWidth()).put("bottom", elementBounds.bottom / (double) image.getHeight())
+                                            .put("centerX", elementBounds.centerX() / (double) image.getWidth()).put("centerY", elementBounds.centerY() / (double) image.getHeight()));
+                                }
+                                lines.put(new JSONObject().put("text", line.getText().trim()).put("elements", elements)
                                         .put("left", bounds.left / (double) image.getWidth()).put("top", bounds.top / (double) image.getHeight())
                                         .put("right", bounds.right / (double) image.getWidth()).put("bottom", bounds.bottom / (double) image.getHeight())
                                         .put("centerX", bounds.centerX() / (double) image.getWidth()).put("centerY", bounds.centerY() / (double) image.getHeight()));
