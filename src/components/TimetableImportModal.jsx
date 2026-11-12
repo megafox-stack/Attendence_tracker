@@ -42,7 +42,19 @@ export default function TimetableImportModal({ onClose, onImported = () => {} })
   const workingDays = useMemo(() => (semester?.workingDays || DAYS).filter((day) => DAYS.includes(day)), [semester]);
   const unresolvedCount = entries.filter((entry) => !entry.subjectId && !entry.newSubject).length;
   const selectedCount = entries.filter((entry) => selectedIds.has(entry.reviewId)).length;
-  const canImport = entries.length > 0 && unresolvedCount === 0 && entries.every((entry) => workingDays.includes(entry.day) && entry.start && entry.end && entry.end > entry.start);
+  const entriesToImport = selectedCount ? entries.filter((entry) => selectedIds.has(entry.reviewId)) : entries;
+  const duplicateGroups = [];
+  const seenEntries = new Map();
+  entriesToImport.forEach((entry) => {
+    const subjectKey = entry.subjectId || entry.newSubject?.code?.trim().toUpperCase();
+    if (!subjectKey) return;
+    const key = `${entry.day}|${entry.start}|${entry.end}|${subjectKey}`;
+    if (seenEntries.has(key)) duplicateGroups.push([seenEntries.get(key), entry]);
+    else seenEntries.set(key, entry);
+  });
+  const duplicateIds = new Set(duplicateGroups.flatMap(([first, second]) => [first.reviewId, second.reviewId]));
+  const canImport = entriesToImport.length > 0 && duplicateGroups.length === 0 && entriesToImport.every((entry) => (entry.subjectId || entry.newSubject)
+    && workingDays.includes(entry.day) && entry.start && entry.end && entry.end > entry.start);
 
   async function selectImage() {
     setBusy(true); setError(''); setMessage('');
@@ -113,7 +125,7 @@ export default function TimetableImportModal({ onClose, onImported = () => {} })
     if (!canImport || busy) return;
     setBusy(true); setError('');
     try {
-      const rows = entries.map((entry) => ({ day: entry.day, start: entry.start, end: entry.end, room: entry.room,
+      const rows = entriesToImport.map((entry) => ({ day: entry.day, start: entry.start, end: entry.end, room: entry.room,
         ...(entry.newSubject ? { newSubject: entry.newSubject } : { subjectId: entry.subjectId }) }));
       const result = await importTimetable(modeToConfirm, rows);
       const text = `${result.added} class ${result.added === 1 ? 'entry' : 'entries'} added${result.skippedDuplicates ? `; ${result.skippedDuplicates} duplicate${result.skippedDuplicates === 1 ? '' : 's'} skipped` : ''}${result.preservedPending ? `; ${result.preservedPending} Pending record${result.preservedPending === 1 ? '' : 's'} kept` : ''}.`;
@@ -135,13 +147,14 @@ export default function TimetableImportModal({ onClose, onImported = () => {} })
       {(entries.length > 0 || hasImage) && <>
         <div className="timetable-import-list-heading"><div><strong>Review classes</strong><small>{entries.length} suggested · {unresolvedCount} need a subject match</small></div><button type="button" className="button button-secondary button-small" onClick={() => setEntries((current) => [...current, emptyClass(workingDays[0] || 'Monday')])}><Plus size={14} />Add class</button></div>
         <section className="timetable-bulk-panel" aria-label="Bulk class actions">
-          <div className="timetable-bulk-heading"><div><strong><UsersRound size={14} />Bulk subject actions</strong><small>{selectedCount} selected · changes remain in this review until import is confirmed</small></div><div className="timetable-bulk-selection"><button type="button" onClick={() => setSelectedIds(new Set(entries.map((entry) => entry.reviewId)))} disabled={!entries.length}>Select all</button><button type="button" onClick={() => setSelectedIds(new Set())} disabled={!selectedCount}>Clear</button></div></div>
+          <div className="timetable-bulk-heading"><div><strong><UsersRound size={14} />Bulk subject actions</strong><small>{selectedCount ? `${selectedCount} selected classes will be imported; ` : 'No classes selected, so all entries will be imported when valid; ' }bulk changes stay in this review until import is confirmed</small></div><div className="timetable-bulk-selection"><button type="button" onClick={() => setSelectedIds(new Set(entries.map((entry) => entry.reviewId)))} disabled={!entries.length}>Select all</button><button type="button" onClick={() => setSelectedIds(new Set())} disabled={!selectedCount}>Clear</button></div></div>
           <div className="timetable-bulk-row"><SelectField label="Apply saved subject" value={bulkSubjectId} onChange={(event) => setBulkSubjectId(event.target.value)} disabled={!subjects.length}><option value="">Choose a subject</option>{subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.name} ({subject.code})</option>)}</SelectField><button type="button" className="button button-secondary button-small" onClick={applyBulkSubject} disabled={!selectedCount || !bulkSubjectId}>Apply to selected</button></div>
           <div className="timetable-bulk-row timetable-bulk-new"><Field label="New subject name" value={bulkNewSubject.name} onChange={(event) => setBulkNewSubject((current) => ({ ...current, name: event.target.value }))} placeholder="Subject name" /><Field label="Subject code" value={bulkNewSubject.code} onChange={(event) => setBulkNewSubject((current) => ({ ...current, code: event.target.value }))} placeholder="Code" /><button type="button" className="button button-secondary button-small" onClick={applyBulkNewSubject} disabled={!selectedCount || !bulkNewSubject.name.trim() || !bulkNewSubject.code.trim()}><Plus size={14} />Use for selected</button></div>
         </section>
         {!entries.length && <p className="timetable-import-intro">No rows were recognized. You can add the timetable classes manually below.</p>}
-        <div className="timetable-import-list">{entries.map((entry, index) => <article className={`timetable-import-row${selectedIds.has(entry.reviewId) ? ' timetable-import-row-selected' : ''}`} key={entry.reviewId}>
+        <div className="timetable-import-list">{entries.map((entry, index) => <article className={`timetable-import-row${selectedIds.has(entry.reviewId) ? ' timetable-import-row-selected' : ''}${duplicateIds.has(entry.reviewId) ? ' timetable-import-row-duplicate' : ''}`} key={entry.reviewId}>
           <div className="timetable-import-row-top"><label className="timetable-import-select"><input type="checkbox" checked={selectedIds.has(entry.reviewId)} onChange={() => toggleSelected(entry.reviewId)} aria-label={`Select class ${index + 1} for bulk actions`} /><strong>Class {index + 1}</strong></label><button type="button" className="icon-button" aria-label={`Remove class ${index + 1}`} onClick={() => { setEntries((current) => current.filter((_, i) => i !== index)); setSelectedIds((current) => { const next = new Set(current); next.delete(entry.reviewId); return next; }); }}><Trash2 size={14} /></button></div>
+          {duplicateIds.has(entry.reviewId) && <p className="timetable-import-row-error" role="alert">Duplicate day, time, and subject in the classes selected for import.</p>}
           <SelectField label="Day" value={entry.day} onChange={(event) => updateEntry(index, { day: event.target.value })}>{DAYS.map((day) => <option key={day} value={day} disabled={!workingDays.includes(day)}>{workingDays.includes(day) ? day : `${day} (not enabled)`}</option>)}</SelectField>
           <SelectField label="Subject" value={entry.newSubject ? '__new__' : entry.subjectId} onChange={(event) => {
             const selected = event.target.value;
@@ -155,12 +168,12 @@ export default function TimetableImportModal({ onClose, onImported = () => {} })
           <Field label="Room or laboratory" value={entry.room} onChange={(event) => updateEntry(index, { room: event.target.value })} placeholder="Optional" />
         </article>)}</div>
         <div className="timetable-import-actions"><button type="button" className="button button-secondary" disabled={!canImport || busy} onClick={() => setModeToConfirm('merge')}><Check size={14} />Review merge</button><button type="button" className="button button-primary" disabled={!canImport || busy} onClick={() => setModeToConfirm('replace')}><Check size={14} />Review replace</button></div>
-        {!canImport && <p className="form-error">{entries.some((entry) => !workingDays.includes(entry.day)) ? 'Enable the detected class days in the semester setup, then reopen the import.' : 'Choose or add a subject and enter a valid time range for every class.'}</p>}
+        {!canImport && <p className="form-error">{duplicateGroups.length ? `Duplicate classes: ${duplicateGroups.map(([first, second]) => `Class ${entries.indexOf(first) + 1} and Class ${entries.indexOf(second) + 1} (${first.day}, ${first.start}–${first.end}).`).join(' ')} Remove or correct one, or deselect it to import a single class.` : entriesToImport.some((entry) => !workingDays.includes(entry.day)) ? 'Enable the selected class days in the semester setup, then reopen the import.' : 'Choose or add a subject and enter a valid time range for each class being imported.'}</p>}
       </>}
     </Overlay>
     {modeToConfirm && <Overlay title={modeToConfirm === 'replace' ? 'Replace the current timetable?' : 'Merge these classes?'} onClose={() => busy ? null : setModeToConfirm('')} footer={<><button type="button" className="button button-secondary" disabled={busy} onClick={() => setModeToConfirm('')}>Go back</button><button type="button" className={`button ${modeToConfirm === 'replace' ? 'button-danger' : 'button-primary'}`} disabled={busy || !canImport} onClick={confirmImport}>{busy ? 'Applying…' : modeToConfirm === 'replace' ? 'Confirm replace' : 'Confirm merge'}</button></>}>
       <p className="dialog-copy">{modeToConfirm === 'replace' ? 'The current recurring entries will be removed from the active timetable. Historical and reviewed attendance will be kept; eligible future Pending records created by the scheduler may be removed.' : 'Current recurring entries will stay. Exact duplicate classes will be skipped.'}</p>
-      <p className="dialog-copy">{entries.length} reviewed classes will be processed. Subject records are reused where matched. This action changes the timetable on this device.</p>
+      <p className="dialog-copy">{entriesToImport.length} reviewed {entriesToImport.length === 1 ? 'class' : 'classes'} will be processed. Subject records are reused where matched. This action changes the timetable on this device.</p>
       {error && <p className="form-error" role="alert">{error}</p>}
     </Overlay>}
   </>;
